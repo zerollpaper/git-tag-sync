@@ -1,0 +1,63 @@
+{
+  "fill": {
+    "linear-gradient": [
+      "display-p3:1.00000,0.55000,0.30000,1.00000",
+      "display-p3:0.86000,0.24000,0.14000,1.00000"
+    ]
+  },
+  "groups": [
+    {
+      "name": "枝",
+      "layers": [
+        {
+          "image-name": "branch.svg",
+          "name": "枝",
+          "glass": false,
+          "fill-specializations": [
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "display-p3:1.00000,1.00000,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance": "tinted",
+              "value": {
+                "solid": "display-p3:0.10000,0.10000,0.10000,1.00000"
+              }
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    },
+    {
+      "name": "タグ",
+      "layers": [
+        {
+          "image-name": "tag.svg",
+          "name": "タグ",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

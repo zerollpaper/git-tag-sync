@@ -1,0 +1,3 @@
+# 自分用の除外先（excludes.example.txt から install.sh が作る）
+excludes.txt
+.DS_Store
