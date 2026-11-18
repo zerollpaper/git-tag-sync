@@ -16,6 +16,43 @@ let home = FileManager.default.homeDirectoryForCurrentUser
 let jobPlistURL = home.appendingPathComponent("Library/LaunchAgents/\(jobLabel).plist")
 let stateURL = home.appendingPathComponent("Library/Application Support/Git Tag Sync/last-run.json")
 
+/// アプリにある言語（正本は英語）
+let supportedLanguages = ["en", "ja"]
+/// 言語の設定を保存するキー（このアプリの UserDefaults。空なら macOS の設定に合わせる）
+let languageDefaultsKey = "Language"
+
+/// 画面の言語。アプリで選んだ言語があればそれ、なければ macOS の言語設定とアプリにある訳から決める。
+var uiLanguage: String {
+  if let chosen = UserDefaults.standard.string(forKey: languageDefaultsKey), supportedLanguages.contains(chosen) {
+    return chosen
+  }
+  return Bundle.main.preferredLocalizations.first ?? "en"
+}
+var uiLocale: Locale { Locale(identifier: uiLanguage) }
+
+/// 言語ごとの訳の入った Bundle（en.lproj などのフォルダ）。見つからなければ本体。
+private var languageBundles: [String: Bundle] = [:]
+func languageBundle(_ language: String) -> Bundle {
+  if let cached = languageBundles[language] { return cached }
+  let bundle = Bundle.main.path(forResource: language, ofType: "lproj").flatMap(Bundle.init(path:)) ?? Bundle.main
+  languageBundles[language] = bundle
+  return bundle
+}
+
+/// 画面などに出す文を引く。正本は英語で、訳は Resources/<言語>.lproj/Localizable.strings にある
+/// （訳の漏れは tools/check-strings.py で調べる）。埋め込みは %@・%d（順番を変えるときは %1$@ など）。
+func L(_ key: String, _ args: CVarArg...) -> String {
+  let format = languageBundle(uiLanguage).localizedString(forKey: key, value: key, table: nil)
+  return args.isEmpty ? format : String(format: format, locale: uiLocale, arguments: args)
+}
+
+/// スクリプトに画面と同じ言語でメッセージを出させるための環境変数
+func scriptEnvironment() -> [String: String] {
+  var env = ProcessInfo.processInfo.environment
+  env["GIT_TAG_SYNC_LANG"] = uiLanguage
+  return env
+}
+
 /// 1回の実行の結果。
 struct RunRecord: Codable {
   var start: Date
@@ -36,9 +73,9 @@ enum ScheduleMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
   var title: String {
     switch self {
-    case .daily: return "毎日"
-    case .interval: return "一定の間隔"
-    case .off: return "しない"
+    case .daily: return L("Every day")
+    case .interval: return L("Every few hours")
+    case .off: return L("Never")
     }
   }
 }
@@ -118,17 +155,28 @@ struct JobSettings: Equatable {
   var summary: String {
     func t(_ h: Int, _ m: Int) -> String { String(format: "%d:%02d", h, m) }
     switch mode {
-    case .off: return "自動では同期しない"
-    case .daily: return "毎日 \(t(hour, minute))"
-    case .interval: return "\(intervalHours)時間ごと（\(plannedTimes.map { t($0.hour, $0.minute) }.joined(separator: "・"))）"
+    case .off: return L("No automatic sync")
+    case .daily: return L("Every day at %@", t(hour, minute))
+    case .interval:
+      let times = plannedTimes
+      if times.count <= 6 {
+        return L("Every %1$d hours (%2$@)", intervalHours, times.map { t($0.hour, $0.minute) }.joined(separator: L(", ")))
+      }
+      return intervalHours == 1 ? L("Every hour from %@", t(hour, minute))
+        : L("Every %1$d hours from %2$@", intervalHours, t(hour, minute))
     }
+  }
+
+  /// 「N時間ごと」の選択肢の名前
+  static func intervalTitle(_ hours: Int) -> String {
+    hours == 1 ? L("Every hour") : L("Every %d hours", hours)
   }
 
   /// plist を書き換える（ほかの項目はそのまま残す）
   func write() throws {
     let data = try Data(contentsOf: jobPlistURL)
     guard var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
-      throw NSError(domain: "GitTagSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "launchd の設定ファイルを読めません"])
+      throw NSError(domain: "GitTagSync", code: 1, userInfo: [NSLocalizedDescriptionKey: L("Cannot read the launchd configuration file.")])
     }
     let times = plannedTimes.map { ["Hour": $0.hour, "Minute": $0.minute] }
     switch mode {
@@ -157,15 +205,16 @@ func stamp(_ date: Date) -> String {
 
 func runSync(_ args: [String]) -> Int32 {
   guard let script = Bundle.main.object(forInfoDictionaryKey: "SyncScript") as? String else {
-    FileHandle.standardError.write("ERROR: Info.plist に SyncScript がありません。\n".data(using: .utf8)!)
+    FileHandle.standardError.write((L("ERROR: SyncScript is missing from Info.plist.") + "\n").data(using: .utf8)!)
     return 1
   }
   let start = Date()
-  writeOut("=== \(stamp(start)) 開始 \(args.joined(separator: " "))\n")
+  writeOut(L("=== %1$@ started %2$@", stamp(start), args.joined(separator: " ")) + "\n")
 
   let process = Process()
   process.executableURL = URL(fileURLWithPath: "/bin/zsh")
   process.arguments = [script] + args
+  process.environment = scriptEnvironment()
   // 標準出力と標準エラーを1本にまとめ、順番どおりに読む。
   let pipe = Pipe()
   process.standardOutput = pipe
@@ -179,11 +228,11 @@ func runSync(_ args: [String]) -> Int32 {
     output = String(decoding: data, as: UTF8.self)
     exitCode = process.terminationStatus
   } catch {
-    output = "ERROR: \(script) を起動できません: \(error)\n"
+    output = L("ERROR: Cannot start %1$@: %2$@", script, "\(error)") + "\n"
     exitCode = 1
   }
   writeOut(output)
-  writeOut("=== \(stamp(Date())) 終了（終了コード \(exitCode)）\n")
+  writeOut(L("=== %1$@ finished (exit code %2$d)", stamp(Date()), Int(exitCode)) + "\n")
 
   var record = RunRecord(start: start, end: Date(), exitCode: exitCode, dryRun: args.contains("--dry-run"),
                          keep: 0, added: [], removed: [], warnings: [], log: output)
@@ -211,7 +260,7 @@ func runSync(_ args: [String]) -> Int32 {
     encoder.outputFormatting = [.prettyPrinted]
     try encoder.encode(record).write(to: stateURL, options: .atomic)
   } catch {
-    FileHandle.standardError.write("WARNING: 結果を保存できません: \(error)\n".data(using: .utf8)!)
+    FileHandle.standardError.write((L("WARNING: Cannot save the result: %@", "\(error)") + "\n").data(using: .utf8)!)
   }
   return exitCode
 }
@@ -219,10 +268,11 @@ func runSync(_ args: [String]) -> Int32 {
 // MARK: - 画面（Finder などから開いたとき）
 
 /// コマンドを実行して、終了コードと標準出力を返す。
-func runCommand(_ path: String, _ args: [String]) -> (status: Int32, output: String) {
+func runCommand(_ path: String, _ args: [String], environment: [String: String]? = nil) -> (status: Int32, output: String) {
   let process = Process()
   process.executableURL = URL(fileURLWithPath: path)
   process.arguments = args
+  if let environment { process.environment = environment }
   let pipe = Pipe()
   process.standardOutput = pipe
   process.standardError = pipe
@@ -263,6 +313,18 @@ final class Model: ObservableObject {
   @Published var excludes: [String] = []
   @Published var tagged: [String] = []
   @Published var taggedLoading = false
+  /// アプリで選んだ言語（空なら macOS の設定に合わせる）。変えると画面がその場で描き直される
+  @Published var language = UserDefaults.standard.string(forKey: languageDefaultsKey) ?? "" {
+    didSet {
+      if language.isEmpty {
+        UserDefaults.standard.removeObject(forKey: languageDefaultsKey)
+      } else {
+        UserDefaults.standard.set(language, forKey: languageDefaultsKey)
+      }
+      onLanguageChange?()
+    }
+  }
+  var onLanguageChange: (() -> Void)?
   private var timer: Timer?
 
   init() { load() }
@@ -294,12 +356,12 @@ final class Model: ObservableObject {
 
   /// 除外できるか。できなければ理由を返す。
   func exclusionProblem(_ path: String) -> String? {
-    if !isInside(path, home.path) || path == home.path { return "ホームフォルダの中のフォルダを選んでください。" }
+    if !isInside(path, home.path) || path == home.path { return L("Choose a folder inside your home folder.") }
     if path.dropFirst(home.path.count + 1).split(separator: "/").contains(where: { $0.hasPrefix(".") }) {
-      return "名前が . で始まるフォルダの中は、もともと除外しています。"
+      return L("Folders whose names start with “.” are always excluded.")
     }
     if let base = excludes.first(where: { isInside(path, $0) }) {
-      return "すでに除外しています（\(shortPath(base))）。"
+      return L("Already excluded (%@).", shortPath(base))
     }
     return nil
   }
@@ -314,21 +376,21 @@ final class Model: ObservableObject {
     do {
       try text.write(to: excludesURL, atomically: true, encoding: .utf8)
     } catch {
-      message = "excludes.txt に書き込めませんでした: \(error.localizedDescription)"
+      message = L("Could not write excludes.txt: %@", error.localizedDescription)
       return
     }
     loadExcludes()
     busy = true
-    message = "\(shortPath(path)) の中のタグを外しています…"
+    message = L("Removing tags inside %@…", shortPath(path))
     DispatchQueue.global().async {
-      let result = runCommand("/bin/zsh", [syncScript, "--untag", path])
+      let result = runCommand("/bin/zsh", [syncScript, "--untag", path], environment: scriptEnvironment())
       let count = result.output.range(of: #"UNTAG: (\d+)"#, options: .regularExpression)
         .map { String(result.output[$0].dropFirst("UNTAG: ".count)) } ?? "?"
       DispatchQueue.main.async {
         self.busy = false
         self.message = result.status == 0
-          ? "\(shortPath(path)) を除外に追加し、「Git」タグを \(count) 個外しました。"
-          : "除外には追加しましたが、タグを外せませんでした: \(result.output.trimmingCharacters(in: .whitespacesAndNewlines))"
+          ? L("Excluded %1$@ and removed %2$@ “Git” tags.", shortPath(path), count)
+          : L("Excluded the folder, but could not remove the tags: %@", result.output.trimmingCharacters(in: .whitespacesAndNewlines))
         self.loadTagged()
       }
     }
@@ -341,11 +403,11 @@ final class Model: ObservableObject {
     do {
       try kept.joined(separator: "\n").write(to: excludesURL, atomically: true, encoding: .utf8)
     } catch {
-      message = "excludes.txt に書き込めませんでした: \(error.localizedDescription)"
+      message = L("Could not write excludes.txt: %@", error.localizedDescription)
       return
     }
     loadExcludes()
-    message = "\(shortPath(path)) を除外から外しました。次の同期（「今すぐ同期」でも）で、中のリポジトリにタグが付きます。"
+    message = L("Stopped excluding %@. Repositories inside will be tagged at the next sync (or when you click Sync Now).", shortPath(path))
   }
 
   func chooseExclusions() {
@@ -354,8 +416,8 @@ final class Model: ObservableObject {
     panel.canChooseFiles = false
     panel.allowsMultipleSelection = true
     panel.directoryURL = home
-    panel.prompt = "除外に追加"
-    panel.message = "除外するフォルダを選んでください。そのフォルダと中の「Git」タグは外れます。"
+    panel.prompt = L("Exclude")
+    panel.message = L("Choose folders to exclude. The “Git” tag is removed from them and from everything inside.")
     guard panel.runModal() == .OK else { return }
     for url in panel.urls { addExclusion(url.path) }
   }
@@ -366,7 +428,7 @@ final class Model: ObservableObject {
     let started = Date()
     let kick = runCommand("/bin/launchctl", ["kickstart", "gui/\(getuid())/\(jobLabel)"])
     guard kick.status == 0 else {
-      message = "launchd のジョブ \(jobLabel) を起動できませんでした。install.sh を実行し直してください。"
+      message = L("Could not start the launchd job %@. Run install.sh again.", jobLabel)
       return
     }
     syncing = true
@@ -377,7 +439,7 @@ final class Model: ObservableObject {
         t.invalidate(); self.syncing = false; self.load()
       } else if Date().timeIntervalSince(started) > 15 * 60 {
         t.invalidate(); self.syncing = false
-        self.message = "15分たっても終わりませんでした。ログを確認してください。"
+        self.message = L("The sync did not finish within 15 minutes. Check the log.")
       }
     }
   }
@@ -386,11 +448,11 @@ final class Model: ObservableObject {
   func applySchedule(_ new: JobSettings) {
     let domain = "gui/\(getuid())"
     if runCommand("/bin/launchctl", ["print", "\(domain)/\(jobLabel)"]).output.contains("state = running") {
-      message = "同期の実行中です。終わってから保存してください。"
+      message = L("A sync is running. Save again after it finishes.")
       return
     }
     busy = true
-    message = "自動の同期の設定を保存しています…"
+    message = L("Saving the schedule…")
     DispatchQueue.global().async {
       var problem: String?
       do {
@@ -402,16 +464,23 @@ final class Model: ObservableObject {
         }
         let boot = runCommand("/bin/launchctl", ["bootstrap", domain, jobPlistURL.path])
         if boot.status != 0 {
-          problem = "launchd に読み込めませんでした: \(boot.output.trimmingCharacters(in: .whitespacesAndNewlines))"
+          problem = L("Could not load the job into launchd: %@", boot.output.trimmingCharacters(in: .whitespacesAndNewlines))
         }
       } catch {
-        problem = "保存できませんでした: \(error.localizedDescription)"
+        problem = L("Could not save: %@", error.localizedDescription)
       }
       DispatchQueue.main.async {
         self.busy = false
         self.settings = JobSettings.load()
-        let what = self.settings.mode == .off ? "自動では同期しないようにしました。" : "自動の同期を「\(self.settings.summary)」にしました。"
-        self.message = problem ?? what + (self.settings.runAtLoad ? "ログインしたときにも同期します。" : "")
+        let s = self.settings
+        let done: String
+        switch (s.mode == .off, s.runAtLoad) {
+        case (true, false): done = L("Automatic sync is now off.")
+        case (true, true): done = L("Automatic sync is now off. It still syncs at login.")
+        case (false, false): done = L("Automatic sync: %@.", s.summary)
+        case (false, true): done = L("Automatic sync: %@. Also syncs at login.", s.summary)
+        }
+        self.message = problem ?? done
       }
     }
   }
@@ -425,12 +494,17 @@ final class Model: ObservableObject {
 }
 
 func displayDate(_ date: Date) -> String {
-  let f = DateFormatter()
-  f.locale = Locale(identifier: "ja_JP")
-  f.dateFormat = Calendar.current.isDateInToday(date) ? "今日 H:mm"
-    : Calendar.current.isDateInYesterday(date) ? "昨日 H:mm"
-    : Calendar.current.isDateInTomorrow(date) ? "明日 H:mm" : "M月d日(E) H:mm"
-  return f.string(from: date)
+  let cal = Calendar.current
+  let clock = DateFormatter()
+  clock.dateFormat = "H:mm"
+  let time = clock.string(from: date)
+  if cal.isDateInToday(date) { return L("Today %@", time) }
+  if cal.isDateInYesterday(date) { return L("Yesterday %@", time) }
+  if cal.isDateInTomorrow(date) { return L("Tomorrow %@", time) }
+  let day = DateFormatter()
+  day.locale = uiLocale
+  day.setLocalizedDateFormatFromTemplate("MMMdEEE")
+  return "\(day.string(from: date)) \(time)"
 }
 
 func shortPath(_ path: String) -> String {
@@ -472,14 +546,14 @@ struct PathRow: View {
       Text(shortPath(path)).lineLimit(1).truncationMode(.middle).help(path)
       Spacer()
       Button { revealInFinder(path) } label: { Image(systemName: "magnifyingglass") }
-        .buttonStyle(.borderless).help("Finder で表示")
+        .buttonStyle(.borderless).help(L("Show in Finder"))
       if let onExclude {
-        Button("除外に追加", action: onExclude).controlSize(.small)
-          .help("このフォルダを除外し、中の「Git」タグを外します")
+        Button(L("Exclude"), action: onExclude).controlSize(.small)
+          .help(L("Exclude this folder and remove the “Git” tag inside it"))
       }
       if let onRemove {
         Button(action: onRemove) { Image(systemName: "minus.circle") }
-          .buttonStyle(.borderless).help("除外から外す")
+          .buttonStyle(.borderless).help(L("Stop excluding"))
       }
     }
   }
@@ -495,7 +569,7 @@ struct ResultTab: View {
           lastRun(r)
         } else {
           GroupBox {
-            Text("まだ同期の記録がありません。「今すぐ同期」を押すか、次の定時の実行を待ってください。")
+            Text(L("No sync has run yet. Click Sync Now or wait for the next scheduled run."))
               .foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading).padding(6)
           }
         }
@@ -513,25 +587,25 @@ struct ResultTab: View {
         HStack {
           Image(systemName: failed ? "xmark.octagon.fill" : warned ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
             .foregroundStyle(failed ? .red : warned ? .orange : .green)
-          Text(failed ? "前回の同期は完了しませんでした" : warned ? "前回の同期は完了しました（警告あり）" : "前回の同期は正常に完了しました")
+          Text(failed ? L("The last sync did not finish") : warned ? L("The last sync finished with warnings") : L("The last sync finished successfully"))
             .font(.headline)
           Spacer()
           Text(displayDate(r.end)).foregroundStyle(.secondary)
         }
         if r.dryRun {
-          Text("試しの実行（--dry-run）のため、タグは変更していません。").font(.callout).foregroundStyle(.secondary)
+          Text(L("This was a dry run (--dry-run), so no tags were changed.")).font(.callout).foregroundStyle(.secondary)
         }
         HStack {
-          StatView(title: "そのまま", value: r.keep, symbol: "tag.fill", color: .blue)
-          StatView(title: "付けた", value: r.added.count, symbol: "plus.circle.fill", color: .green)
-          StatView(title: "外した", value: r.removed.count, symbol: "minus.circle.fill", color: .orange)
+          StatView(title: L("Unchanged"), value: r.keep, symbol: "tag.fill", color: .blue)
+          StatView(title: L("Tagged"), value: r.added.count, symbol: "plus.circle.fill", color: .green)
+          StatView(title: L("Untagged"), value: r.removed.count, symbol: "minus.circle.fill", color: .orange)
         }
       }
       .padding(6)
     }
 
     if !r.added.isEmpty || !r.removed.isEmpty {
-      GroupBox("変化があったフォルダ") {
+      GroupBox(L("Changed folders")) {
         VStack(alignment: .leading, spacing: 6) {
           ForEach(r.added, id: \.self) { path in
             PathRow(path: path, symbol: "plus.circle.fill", tint: .green,
@@ -546,17 +620,17 @@ struct ResultTab: View {
     if r.warnings.contains(where: { $0.contains("Operation not permitted") }) {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "lock.fill").foregroundStyle(.orange)
-        Text("読めない場所がありました。フルディスクアクセスが付いていない可能性があります。「Git Tag Sync」がオンになっているか確認し、オンなら一覧から消して追加し直してください。")
+        Text(L("Some folders could not be read. Git Tag Sync may not have Full Disk Access. Check that it is switched on; if it is, remove it from the list and add it again."))
           .font(.callout).fixedSize(horizontal: false, vertical: true)
         Spacer()
-        Button("設定を開く") {
+        Button(L("Open Settings")) {
           NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")!)
         }
       }
     }
 
     if !r.warnings.isEmpty {
-      GroupBox("警告（\(r.warnings.count)件）") {
+      GroupBox(L("Warnings (%d)", r.warnings.count)) {
         ScrollView {
           Text(r.warnings.joined(separator: "\n"))
             .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
@@ -566,9 +640,9 @@ struct ResultTab: View {
       }
     }
 
-    DisclosureGroup("この回のログ") {
+    DisclosureGroup(L("Log of this run")) {
       ScrollView {
-        Text(r.log.isEmpty ? "（出力なし）" : r.log)
+        Text(r.log.isEmpty ? L("(no output)") : r.log)
           .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
           .frame(maxWidth: .infinity, alignment: .leading).padding(6)
       }
@@ -584,18 +658,18 @@ struct TaggedTab: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
-        Text("今「Git」タグが付いているフォルダ（\(model.tagged.filter { path in !model.excludes.contains(where: { isInside(path, $0) }) }.count)）").font(.headline)
+        Text(L("Folders with the “Git” tag (%d)", model.tagged.filter { path in !model.excludes.contains(where: { isInside(path, $0) }) }.count)).font(.headline)
         if model.taggedLoading { ProgressView().controlSize(.small) }
         Spacer()
         Button { model.loadTagged() } label: { Image(systemName: "arrow.clockwise") }
-          .buttonStyle(.borderless).help("読み込み直す")
+          .buttonStyle(.borderless).help(L("Reload"))
       }
       // 除外したばかりのものは、Spotlight に反映されるまで残って見えるので出さない。
       List(model.tagged.filter { path in !model.excludes.contains(where: { isInside(path, $0) }) }, id: \.self) { path in
         PathRow(path: path, symbol: "tag.fill", tint: .blue, onExclude: { model.addExclusion(path) })
       }
       .listStyle(.inset(alternatesRowBackgrounds: true))
-      Text("Spotlight の検索結果です。タグを付けた直後は、反映まで少しかかることがあります。")
+      Text(L("Found with Spotlight. Newly tagged folders may take a moment to appear."))
         .font(.caption).foregroundStyle(.secondary)
     }
   }
@@ -608,26 +682,26 @@ struct ExcludesTab: View {
     VStack(alignment: .leading, spacing: 10) {
       GroupBox {
         VStack(alignment: .leading, spacing: 4) {
-          Label("探す範囲：ホームフォルダ全体（~）", systemImage: "magnifyingglass")
-          Label("常に除外：名前が . で始まるフォルダとその中（ツールの設定やキャッシュの置き場のため）", systemImage: "eye.slash")
+          Label(L("Search scope: your whole home folder (~)"), systemImage: "magnifyingglass")
+          Label(L("Always excluded: folders whose names start with “.” and everything inside (tools keep settings and caches there)"), systemImage: "eye.slash")
             .fixedSize(horizontal: false, vertical: true)
         }
         .font(.callout).frame(maxWidth: .infinity, alignment: .leading).padding(4)
       }
       HStack {
-        Text("除外するフォルダ（\(model.excludes.count)）").font(.headline)
+        Text(L("Excluded folders (%d)", model.excludes.count)).font(.headline)
         Spacer()
-        Button("フォルダを追加…") { model.chooseExclusions() }.disabled(model.busy)
+        Button(L("Add Folder…")) { model.chooseExclusions() }.disabled(model.busy)
       }
       List(model.excludes, id: \.self) { path in
         PathRow(path: path, symbol: "folder.badge.minus", tint: .secondary, onRemove: { model.removeExclusion(path) })
       }
       .listStyle(.inset(alternatesRowBackgrounds: true))
       HStack(alignment: .top) {
-        Text("除外に追加すると、そのフォルダと中の「Git」タグを外します。除外から外すと、次の同期で中のリポジトリにタグが付きます。")
+        Text(L("Excluding a folder removes the “Git” tag from it and from everything inside. After you stop excluding it, repositories inside are tagged at the next sync."))
           .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         Spacer()
-        Button("excludes.txt を表示") { revealInFinder(excludesURL.path) }.controlSize(.small)
+        Button(L("Show excludes.txt")) { revealInFinder(excludesURL.path) }.controlSize(.small)
       }
     }
   }
@@ -651,8 +725,8 @@ struct ScheduleSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
-      Text("自動で同期する").font(.headline)
-      Picker("自動で同期する", selection: $draft.mode) {
+      Text(L("Sync automatically")).font(.headline)
+      Picker(L("Sync automatically"), selection: $draft.mode) {
         ForEach(ScheduleMode.allCases) { Text($0.title).tag($0) }
       }
       .pickerStyle(.segmented).labelsHidden()
@@ -660,14 +734,14 @@ struct ScheduleSheet: View {
       Group {
         switch draft.mode {
         case .daily:
-          DatePicker("時刻", selection: time, displayedComponents: .hourAndMinute)
+          DatePicker(L("Time"), selection: time, displayedComponents: .hourAndMinute)
         case .interval:
-          Picker("間隔", selection: $draft.intervalHours) {
-            ForEach(intervalChoices, id: \.self) { Text("\($0)時間ごと").tag($0) }
+          Picker(L("Interval"), selection: $draft.intervalHours) {
+            ForEach(intervalChoices, id: \.self) { Text(JobSettings.intervalTitle($0)).tag($0) }
           }
-          DatePicker("起点の時刻", selection: time, displayedComponents: .hourAndMinute)
+          DatePicker(L("Starting at"), selection: time, displayedComponents: .hourAndMinute)
         case .off:
-          Text("自動では同期しません。「今すぐ同期」はいつでも使えます。")
+          Text(L("Git Tag Sync does not sync automatically. You can always click Sync Now."))
             .foregroundStyle(.secondary)
         }
       }
@@ -676,14 +750,14 @@ struct ScheduleSheet: View {
       if draft.mode != .off {
         Label(draft.summary, systemImage: "clock").font(.callout).foregroundStyle(.secondary)
       }
-      Toggle("ログインしたときにも同期する", isOn: $draft.runAtLoad)
-      Text("スリープ中に時刻を過ぎたときは、起きたときに同期します。「ログインしたときにも同期する」をオンにして保存すると、その場でも1回同期します。")
+      Toggle(L("Also sync at login"), isOn: $draft.runAtLoad)
+      Text(L("If the Mac is asleep at a scheduled time, it syncs when the Mac wakes up. If you turn on “Also sync at login” and save, it also syncs right away."))
         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
       HStack {
         Spacer()
-        Button("キャンセル") { dismiss() }.keyboardShortcut(.cancelAction)
-        Button("保存") {
+        Button(L("Cancel")) { dismiss() }.keyboardShortcut(.cancelAction)
+        Button(L("Save")) {
           model.applySchedule(draft)
           dismiss()
         }
@@ -706,15 +780,30 @@ struct ContentView: View {
         Image(nsImage: NSApp.applicationIconImage).resizable().frame(width: 52, height: 52)
         VStack(alignment: .leading, spacing: 2) {
           Text("Git Tag Sync").font(.title2.weight(.semibold))
-          Text("Git のフォルダに Finder の「Git」タグを付け、外れたものから外します")
+          Text(L("Keeps the Finder “Git” tag on your Git repositories"))
             .font(.callout).foregroundStyle(.secondary)
         }
+        Spacer()
+        Menu {
+          Picker(L("Language"), selection: $model.language) {
+            Text(L("System Setting")).tag("")
+            Text("English").tag("en")
+            Text("日本語").tag("ja")
+          }
+          .pickerStyle(.inline)
+        } label: {
+          Image(systemName: "globe")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(L("Language"))
       }
+      .id(model.language)
 
       TabView {
-        ResultTab(model: model).padding(10).tabItem { Text("前回の結果") }
-        TaggedTab(model: model).padding(10).tabItem { Text("タグ付きのフォルダ") }
-        ExcludesTab(model: model).padding(10).tabItem { Text("除外するフォルダ") }
+        ResultTab(model: model).padding(10).tabItem { Text(L("Last Run")) }
+        TaggedTab(model: model).padding(10).tabItem { Text(L("Tagged Folders")) }
+        ExcludesTab(model: model).padding(10).tabItem { Text(L("Excluded Folders")) }
       }
 
       if let message = model.message {
@@ -728,19 +817,19 @@ struct ContentView: View {
 
       HStack {
         if !model.settings.exists {
-          Label("定期実行が登録されていません（install.sh を実行してください）", systemImage: "clock.badge.exclamationmark")
+          Label(L("No scheduled sync (run install.sh)"), systemImage: "clock.badge.exclamationmark")
             .foregroundStyle(.orange)
         } else {
           Group {
             if let next = model.settings.nextRun() {
-              Label("次回：\(displayDate(next))", systemImage: "clock")
+              Label(L("Next: %@", displayDate(next)), systemImage: "clock")
             } else {
-              Label("自動では同期しない", systemImage: "pause.circle")
+              Label(L("No automatic sync"), systemImage: "pause.circle")
             }
           }
           .foregroundStyle(.secondary)
-          .help(model.settings.summary + (model.settings.runAtLoad ? "・ログインしたときにも" : ""))
-          Button("変更…") { showSchedule = true }
+          .help(model.settings.runAtLoad ? L("%@, and at login", model.settings.summary) : model.settings.summary)
+          Button(L("Change…")) { showSchedule = true }
             .controlSize(.small)
             .disabled(model.busy || model.syncing)
         }
@@ -748,14 +837,14 @@ struct ContentView: View {
         if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
           Text("v\(version)").font(.caption).foregroundStyle(.tertiary)
         }
-        Button("ログ全体を開く") { model.openFullLog() }
+        Button(L("Open Full Log")) { model.openFullLog() }
         Button {
           model.syncNow()
         } label: {
           if model.syncing {
-            HStack(spacing: 6) { ProgressView().controlSize(.small); Text("同期中…") }
+            HStack(spacing: 6) { ProgressView().controlSize(.small); Text(L("Syncing…")) }
           } else {
-            Text("今すぐ同期")
+            Text(L("Sync Now"))
           }
         }
         .keyboardShortcut(.defaultAction)
@@ -773,18 +862,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   var window: NSWindow?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    let mainMenu = NSMenu()
-    let appItem = NSMenuItem()
-    mainMenu.addItem(appItem)
-    let appMenu = NSMenu()
-    appMenu.addItem(withTitle: "Git Tag Sync を終了", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-    appItem.submenu = appMenu
-    let windowItem = NSMenuItem()
-    mainMenu.addItem(windowItem)
-    let windowMenu = NSMenu(title: "ウインドウ")
-    windowMenu.addItem(withTitle: "閉じる", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
-    windowItem.submenu = windowMenu
-    NSApp.mainMenu = mainMenu
+    buildMenu()
+    model.onLanguageChange = { [weak self] in
+      self?.buildMenu()
+      self?.model.objectWillChange.send()
+    }
 
     let window = NSWindow(contentViewController: NSHostingController(rootView: ContentView(model: model)))
     window.title = "Git Tag Sync"
@@ -793,6 +875,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     window.makeKeyAndOrderFront(nil)
     self.window = window
     NSApp.activate(ignoringOtherApps: true)
+  }
+
+  /// メニューバーを作る（言語を変えたときも作り直す）
+  func buildMenu() {
+    let mainMenu = NSMenu()
+    let appItem = NSMenuItem()
+    mainMenu.addItem(appItem)
+    let appMenu = NSMenu()
+    appMenu.addItem(withTitle: L("Quit Git Tag Sync"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    appItem.submenu = appMenu
+    let windowItem = NSMenuItem()
+    mainMenu.addItem(windowItem)
+    let windowMenu = NSMenu(title: L("Window"))
+    windowMenu.addItem(withTitle: L("Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    windowItem.submenu = windowMenu
+    // 言語（ウインドウ右上の地球儀と同じ）
+    let languageItem = NSMenuItem()
+    mainMenu.addItem(languageItem)
+    let languageMenu = NSMenu(title: L("Language"))
+    for (title, code) in [(L("System Setting"), ""), ("English", "en"), ("日本語", "ja")] {
+      let item = NSMenuItem(title: title, action: #selector(chooseLanguage(_:)), keyEquivalent: "")
+      item.target = self
+      item.representedObject = code
+      item.state = model.language == code ? .on : .off
+      languageMenu.addItem(item)
+    }
+    languageItem.submenu = languageMenu
+    NSApp.mainMenu = mainMenu
+  }
+
+  @objc func chooseLanguage(_ sender: NSMenuItem) {
+    model.language = sender.representedObject as? String ?? ""
   }
 
   func applicationDidBecomeActive(_ notification: Notification) {

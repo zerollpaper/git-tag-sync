@@ -6,6 +6,8 @@ Git のリポジトリになっているフォルダに、Finder の「Git」タ
 
 Finder で「Git」タグを選ぶと、Mac の中のリポジトリが一覧できます。
 
+![Git Tag Sync](docs/screenshot-ja.jpg)
+
 ## しくみ
 
 - ホームフォルダ全体から、`.git`（フォルダでもファイルでもよい）があるフォルダを探し、「Git」タグを付けます。
@@ -66,7 +68,7 @@ cd / && rm -rf "$D"
 
 ## 使い方
 
-アプリを開くと、3つのタブがあります（画面は日本語のみ）。
+アプリを開くと、3つのタブがあります。
 
 - **前回の結果**：状態（正常／警告あり／完了せず）と日時、件数（そのまま・付けた・外した）、変化があったフォルダ、警告、その回のログ。読めない場所があったときは、フルディスクアクセスの案内が出ます。
 - **タグ付きのフォルダ**：今「Git」タグが付いているフォルダの一覧（Spotlight で探す）。Finder で表示したり、除外に追加したりできます。
@@ -102,6 +104,10 @@ launchctl kickstart gui/$(id -u)/local.git-tag-sync   # 登録したジョブを
 
 ログは `~/Library/Logs/git-tag-sync.log` に追記されます。1回分は「=== 開始」の行、変化（ADD・REMOVE）と警告、`SUMMARY` の行、「=== 終了（終了コード）」の行です。前回の結果は `~/Library/Application Support/Git Tag Sync/last-run.json` に保存されます。
 
+### 言語
+
+アプリの画面とログ、スクリプトのメッセージは、英語と日本語に対応しています。既定では macOS の言語設定に合わせます。このアプリだけ言語を変えたいときは、ウインドウ右上の地球儀のボタンか、メニューバーの「言語」で選びます（「システムに合わせる」「English」「日本語」）。画面はその場で切り替わり、自動の同期のログもその言語で書かれます。ターミナルから実行したスクリプトは `LANG`（空なら macOS の言語設定）に従います。
+
 ## 取り除き方
 
 ```bash
@@ -120,7 +126,7 @@ launchd のジョブ、アプリ、前回の結果を消します。このフォ
 | `install.sh` / `uninstall.sh` | 入れる・取り除く |
 | `VERSION` / `CHANGELOG.md` | 版（`git-tag-sync.sh --version` とアプリの画面に出る）と変更点 |
 | `GitTagSync.icon` | アイコン（Icon Composer の形式）。ダーク・クリア・色合い調整の各表示に対応 |
-| `Resources/` | 変換済みのアイコン。`GitTagSync.icon` を直したら `tools/build-icon.sh`（Xcode が要る）で作り直す |
+| `Resources/` | 変換済みのアイコン（`GitTagSync.icon` を直したら `tools/build-icon.sh` で作り直す。Xcode が要る）と、画面の文の訳（`*.lproj/Localizable.strings`。正本は英語なので `en.lproj` は空）。訳の漏れは `tools/check-strings.py` で調べる |
 
 ## ライセンス
 

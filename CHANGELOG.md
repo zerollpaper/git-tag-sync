@@ -2,6 +2,19 @@
 
 この形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、版の付け方は [Semantic Versioning](https://semver.org/lang/ja/) に従います。版の正本は `VERSION` です。
 
+## [0.3.0] - 2026-11-18
+
+### 追加
+
+- 英語に対応した。アプリの画面・メニュー、自動の同期のログ、スクリプト（`git-tag-sync.sh`・`install.sh`・`uninstall.sh`）のメッセージが、英語と日本語で出る。文の正本は英語で、日本語の訳は `Resources/ja.lproj/Localizable.strings` にある。
+- 言語の設定：既定は macOS の言語設定に合わせる。ウインドウ右上の地球儀のボタンか、メニューバーの「言語」で、このアプリだけ「English」「日本語」に切り替えられる（その場で切り替わり、自動の同期のログもその言語になる）。ターミナルから実行したスクリプトは `LANG`（空なら macOS の言語設定）に従う。
+- `tools/check-strings.py`：訳の漏れ、使われていない訳、埋め込み（`%@` など）の食い違いを調べる。
+- README に画面の写真を載せた。
+
+### 変更
+
+- `excludes.example.txt` のコメントを英語と日本語の両方にした。
+
 ## [0.2.0] - 2026-11-18
 
 ### 追加
@@ -25,5 +38,6 @@
 - `install.sh`（`--hour`・`--minute` で時刻を指定、`--build-only`）と `uninstall.sh`。
 - キーチェーンのコード署名用の証明書があれば、それで署名する（入れ直してもフルディスクアクセスが外れない）。なければアドホック署名にする。
 
+[0.3.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.1.0

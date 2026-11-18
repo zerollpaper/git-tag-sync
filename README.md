@@ -6,7 +6,7 @@ A small macOS tool that keeps a Finder tag named **Git** on every folder that is
 
 Select the "Git" tag in the Finder sidebar to see every repository on your Mac.
 
-> The app's interface and the messages are in Japanese.
+![Git Tag Sync](docs/screenshot-en.jpg)
 
 ## How it works
 
@@ -70,21 +70,21 @@ The legacy `-certpbe`/`-keypbe`/`-macalg` options are needed because the keychai
 
 The app has three tabs:
 
-- **前回の結果 (Last run)**: status, time, counts (kept, tagged, untagged), the folders that changed, warnings and the log of that run. If some folders could not be read, it points you to Full Disk Access.
-- **タグ付きのフォルダ (Tagged folders)**: every folder that currently has the "Git" tag (found with Spotlight). Reveal it in Finder or exclude it.
-- **除外するフォルダ (Excluded folders)**: the search scope and the excluded folders. Add folders with "フォルダを追加…" and remove them with "−". **Excluding a folder removes the "Git" tag from it and from everything inside it.** After you remove an exclusion, the repositories inside are tagged at the next sync.
+- **Last Run**: status, time, counts (unchanged, tagged, untagged), the folders that changed, warnings and the log of that run. If some folders could not be read, it points you to Full Disk Access.
+- **Tagged Folders**: every folder that currently has the "Git" tag (found with Spotlight). Show it in Finder or exclude it.
+- **Excluded Folders**: the search scope and the excluded folders. Add folders with "Add Folder…" and remove them with "−". **Excluding a folder removes the "Git" tag from it and from everything inside it.** After you stop excluding it, the repositories inside are tagged at the next sync.
 
-At the bottom: the next scheduled run, "変更…" (change the schedule), "ログ全体を開く" (open the full log in Console) and "今すぐ同期" (sync now).
+At the bottom: the next scheduled run, "Change…" (change the schedule), "Open Full Log" (open the log in Console) and "Sync Now".
 
 ### Schedule
 
-Click "変更…" next to the next run to choose when to sync automatically:
+Click "Change…" next to the next run to choose when to sync automatically:
 
-- **毎日 (Every day)** at a time,
-- **一定の間隔 (Every N hours)**: every 1, 2, 3, 4, 6, 8 or 12 hours from a start time,
-- **しない (Never)**: only when you click "今すぐ同期".
+- **Every day** at a time,
+- **Every few hours**: every 1, 2, 3, 4, 6, 8 or 12 hours from a start time,
+- **Never**: only when you click "Sync Now".
 
-You can also turn on **ログインしたときにも同期する** (also sync at login). If the Mac was asleep at a scheduled time, the sync runs when it wakes up. "Every N hours" is registered as a list of times (`StartCalendarInterval`) for that reason. The setting lives in the launchd plist; running `install.sh` again keeps it unless you pass `--hour`/`--minute`.
+You can also turn on **Also sync at login**. If the Mac was asleep at a scheduled time, the sync runs when it wakes up. "Every N hours" is registered as a list of times (`StartCalendarInterval`) for that reason. The setting lives in the launchd plist; running `install.sh` again keeps it unless you pass `--hour`/`--minute`.
 
 ### `excludes.txt`
 
@@ -104,6 +104,10 @@ launchctl kickstart gui/$(id -u)/local.git-tag-sync   # run the scheduled job no
 
 The log is appended to `~/Library/Logs/git-tag-sync.log`. The last result is saved to `~/Library/Application Support/Git Tag Sync/last-run.json`.
 
+### Language
+
+The app, its log and the scripts' messages are in English or Japanese. By default they follow your macOS language. To choose one for this app only, use the globe button at the top right of the window or the Language menu ("System Setting", "English" or "日本語"); the window switches at once, and the scheduled sync writes its log in the same language. In Terminal, the scripts follow `LANG` (or your macOS language if `LANG` is not set).
+
 ## Uninstall
 
 ```bash
@@ -122,7 +126,7 @@ This removes the launchd job, the app and the saved result. It keeps this folder
 | `install.sh` / `uninstall.sh` | Install and uninstall |
 | `VERSION` / `CHANGELOG.md` | The version (shown by `git-tag-sync.sh --version` and in the app) and the changes |
 | `GitTagSync.icon` | The icon (Icon Composer format), with dark, clear and tinted variants |
-| `Resources/` | The compiled icon. Run `tools/build-icon.sh` (needs Xcode) after editing `GitTagSync.icon` |
+| `Resources/` | The compiled icon (run `tools/build-icon.sh`, which needs Xcode, after editing `GitTagSync.icon`) and the translations (`*.lproj/Localizable.strings`; English is the source, so `en.lproj` is empty). Run `tools/check-strings.py` to find missing translations |
 
 ## License
 

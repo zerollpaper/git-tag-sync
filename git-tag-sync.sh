@@ -14,6 +14,13 @@ TAGNAME="Git"
 # 除外先の一覧。1行に1フォルダ（~ で始めてよい）。空行と # で始まる行は読み飛ばす。
 # ここに書いたフォルダの配下は、探索・タグ操作の両方から除外する。
 EXCLUDES_FILE="${0:A:h}/excludes.txt"
+# メッセージの言語：GIT_TAG_SYNC_LANG（アプリが画面と同じ言語を渡す）→ LC_ALL・LANG → macOS の言語設定の先頭。
+# ja で始まれば日本語、それ以外は英語。
+_lang="${GIT_TAG_SYNC_LANG:-${LC_ALL:-${LANG:-}}}"
+[[ -n "$_lang" ]] || _lang="$(/usr/bin/defaults read -g AppleLanguages 2>/dev/null | /usr/bin/awk -F'"' 'NF > 1 { print $2; exit }')"
+if [[ "$_lang" == ja* ]]; then JA=1; else JA=0; fi
+# t 日本語 英語：言語に合わせて、どちらかの文を返す
+t() { if (( JA )); then print -r -- "$1"; else print -r -- "$2"; fi; }
 DRY_RUN=0
 QUIET=0
 UNTAG_DIR=""
@@ -22,21 +29,23 @@ while (( $# )); do
     --dry-run) DRY_RUN=1 ;;
     --quiet) QUIET=1 ;;
     --untag)
-      (( $# >= 2 )) || { print -u2 -r -- '--untag にはフォルダを指定してください。'; exit 2; }
+      (( $# >= 2 )) || { t '--untag にはフォルダを指定してください。' '--untag needs a folder.' >&2; exit 2; }
       UNTAG_DIR="$2"; shift ;;
     --version)
       print -r -- "git-tag-sync $(<"${0:A:h}/VERSION")"
       exit 0 ;;
     -h|--help)
       print -r -- 'Usage: git-tag-sync.sh [--dry-run] [--quiet]'
-      print -r -- '       git-tag-sync.sh [--dry-run] --untag フォルダ'
+      print -r -- "       git-tag-sync.sh [--dry-run] --untag $(t 'フォルダ' 'FOLDER')"
       print -r -- '       git-tag-sync.sh --version'
-      print -r -- '対象のGitフォルダにタグを付け、Git管理から外れた対象からは外します。除外先には触れません。'
-      print -r -- "除外先は $EXCLUDES_FILE に書きます。"
-      print -r -- '--quiet を付けると、KEEP（変化なし）の行を出しません。'
-      print -r -- '--untag を付けると、同期はせず、そのフォルダとその中の「Git」タグを外します。'
+      t '対象のGitフォルダにタグを付け、Git管理から外れた対象からは外します。除外先には触れません。' \
+        'Adds the Finder "Git" tag to Git folders and removes it from folders that are no longer repositories. Excluded folders are left alone.'
+      t "除外先は $EXCLUDES_FILE に書きます。" "Excluded folders are listed in $EXCLUDES_FILE."
+      t '--dry-run を付けると、タグを変えずに、変わる予定のものだけを出します。' '--dry-run shows what would change without changing any tags.'
+      t '--quiet を付けると、KEEP（変化なし）の行を出しません。' '--quiet does not print unchanged (KEEP) folders.'
+      t '--untag を付けると、同期はせず、そのフォルダとその中の「Git」タグを外します。' '--untag only removes the "Git" tag from the folder and everything inside it.'
       exit 0 ;;
-    *) print -u2 -r -- "不明な引数: $1"; exit 2 ;;
+    *) t "不明な引数: $1" "Unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
@@ -49,13 +58,13 @@ if [[ -f "$EXCLUDES_FILE" ]]; then
     [[ -n "$line" && "$line" != \#* ]] || continue
     [[ "$line" == "~" || "$line" == "~/"* ]] && line="$ROOT${line#\~}"
     if [[ "$line" != /* ]]; then
-      print -u2 -r -- "WARNING: excludes.txt の行を読み飛ばしました（/ か ~ で始まっていません）: $line"
+      print -u2 -r -- "WARNING: $(t "excludes.txt の行を読み飛ばしました（/ か ~ で始まっていません）: $line" "Skipped a line in excludes.txt (it does not start with / or ~): $line")"
       continue
     fi
     EXCLUDE_DIRS+=( "${line:A}" )
   done < "$EXCLUDES_FILE"
 else
-  print -u2 -r -- "WARNING: 除外先の一覧 $EXCLUDES_FILE がありません。除外先なしで続けます。"
+  print -u2 -r -- "WARNING: $(t "除外先の一覧 $EXCLUDES_FILE がありません。除外先なしで続けます。" "$EXCLUDES_FILE does not exist. Continuing without excluded folders.")"
 fi
 
 # Finder のタグを操作する tag コマンド（https://github.com/jdberry/tag 、Homebrew で入る）。
@@ -65,7 +74,7 @@ for candidate in "$(command -v tag 2>/dev/null || true)" /opt/homebrew/bin/tag /
   if [[ -n "$candidate" && -x "$candidate" ]]; then TAG_BIN="$candidate"; break; fi
 done
 if [[ -z "$TAG_BIN" ]]; then
-  print -u2 -r -- 'ERROR: tag コマンドがありません。brew install tag を実行してください。'
+  print -u2 -r -- "ERROR: $(t 'tag コマンドがありません。brew install tag を実行してください。' 'The tag command is missing. Run: brew install tag')"
   exit 1
 fi
 
@@ -100,7 +109,7 @@ trap '/bin/rm -rf -- "$TMP_DIR"' EXIT
 if [[ -n "$UNTAG_DIR" ]]; then
   target="${UNTAG_DIR:A}"
   if [[ ! -d "$target" || ( "$target" != "$ROOT" && "$target" != "$ROOT/"* ) ]]; then
-    print -u2 -r -- "ERROR: ホームフォルダか、その中にあるフォルダを指定してください: $UNTAG_DIR"
+    print -u2 -r -- "ERROR: $(t "ホームフォルダか、その中にあるフォルダを指定してください: $UNTAG_DIR" "Specify your home folder or a folder inside it: $UNTAG_DIR")"
     exit 2
   fi
   /usr/bin/mdfind -0 -onlyin "$target" 'kMDItemUserTags == "Git"' > "$TMP_DIR/untag"
@@ -116,7 +125,7 @@ if [[ -n "$UNTAG_DIR" ]]; then
     print -r -- "UNTAG : $item"
     (( ++COUNT_UNTAG ))
   done
-  (( ! DRY_RUN )) || print -r -- 'DRY RUN: タグの変更は行っていません。'
+  (( ! DRY_RUN )) || print -r -- "DRY RUN: $(t 'タグの変更は行っていません。' 'no tags were changed.')"
   print -r -- "SUMMARY -> UNTAG: $COUNT_UNTAG"
   exit 0
 fi
@@ -130,7 +139,7 @@ find_args+=( '(' -name .git '(' -type d -o -type f ')' -print0 -prune ')' -o
 SCAN_OK=1
 if ! /usr/bin/find "${find_args[@]}" > "$TMP_DIR/repos" 2> "$TMP_DIR/find-errors"; then
   SCAN_OK=0
-  print -u2 -r -- 'WARNING: 探索できない場所があります。確認できる対象の同期を続けますが、全体の同期は未完了です。'
+  print -u2 -r -- "WARNING: $(t '探索できない場所があります。確認できる対象の同期を続けますが、全体の同期は未完了です。' 'Some folders could not be searched. The folders that could be checked are synced, but the sync is incomplete.')"
   /bin/cat "$TMP_DIR/find-errors" >&2
 fi
 GIT_DIRS=()
@@ -168,7 +177,7 @@ while IFS= read -r -d '' repo; do
   print -r -- "REMOVE: $repo"
   (( ++COUNT_REMOVE ))
 done < "$TMP_DIR/tagged"
-(( ! DRY_RUN )) || print -r -- 'DRY RUN: タグの変更は行っていません。'
+(( ! DRY_RUN )) || print -r -- "DRY RUN: $(t 'タグの変更は行っていません。' 'no tags were changed.')"
 print -r -- "SUMMARY -> KEEP: $COUNT_KEEP, ADD: $COUNT_ADD, REMOVE: $COUNT_REMOVE"
 
 # 探索エラーを成功扱いにしない。
