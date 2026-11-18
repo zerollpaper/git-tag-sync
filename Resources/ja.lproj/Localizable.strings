@@ -12,9 +12,7 @@
 "Every hour" = "1時間ごと";
 "Every %d hours" = "%d時間ごと";
 "Cannot read the launchd configuration file." = "launchd の設定ファイルを読めません。";
-"ERROR: SyncScript is missing from Info.plist." = "ERROR: Info.plist に SyncScript がありません。";
 "=== %1$@ started %2$@" = "=== %1$@ 開始 %2$@";
-"ERROR: Cannot start %1$@: %2$@" = "ERROR: %1$@ を起動できません: %2$@";
 "=== %1$@ finished (exit code %2$d)" = "=== %1$@ 終了（終了コード %2$d）";
 "WARNING: Cannot save the result: %@" = "WARNING: 結果を保存できません: %@";
 "Choose a folder inside your home folder." = "ホームフォルダの中のフォルダを選んでください。";
@@ -91,3 +89,11 @@
 "Close" = "閉じる";
 "Language" = "言語";
 "System Setting" = "システムに合わせる";
+"--untag needs a folder." = "--untag にはフォルダを指定してください。";
+"Could not add the tag to %1$@: %2$@" = "%1$@ にタグを付けられませんでした: %2$@";
+"Could not read: %@" = "読めませんでした: %@";
+"Could not remove the tag from %1$@: %2$@" = "%1$@ のタグを外せませんでした: %2$@";
+"Could not search for tagged folders with Spotlight (mdfind). Nothing was changed." = "Spotlight（mdfind）でタグの付いたフォルダを探せませんでした。何も変更していません。";
+"Some folders could not be searched. The folders that could be checked are synced, but the sync is incomplete." = "探索できない場所があります。確認できたフォルダは同期しましたが、全体の同期は未完了です。";
+"Specify your home folder or a folder inside it: %@" = "ホームフォルダか、その中にあるフォルダを指定してください: %@";
+"no tags were changed." = "タグの変更は行っていません。";

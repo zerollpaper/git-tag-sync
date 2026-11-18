@@ -2,6 +2,19 @@
 
 この形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、版の付け方は [Semantic Versioning](https://semver.org/lang/ja/) に従います。版の正本は `VERSION` です。
 
+## [0.4.0] - 2026-11-18
+
+### 変更
+
+- 同期の処理を、zsh のスクリプトからアプリ本体（Swift）に移した。フォルダは `find` と同じ OS の仕組み（`fts`）でたどり、Finder のタグは macOS の機能で直接読み書きする。外部の `tag` コマンド（`brew install tag`）は要らなくなった。同期は約3秒から約0.5秒になった（`~/Library` を除外した場合。launchd からは優先度を下げて動くので、もう少しかかる）。
+- 除外先の一覧を、アプリのデータの置き場（`~/Library/Application Support/Git Tag Sync/excludes.txt`）に移した。`install.sh` が、前の置き場（このフォルダ）にあれば移す。アプリはクローンしたフォルダに頼らなくなった。
+- 読めない場所があったかどうかを、エラーの種類で判断するようにした（前回の結果の画面のフルディスクアクセスの案内）。
+- `uninstall.sh --remove-tags` で、取り除く前にホームフォルダの中の「Git」タグをすべて外せる。
+
+### 削除
+
+- `git-tag-sync.sh`（ターミナルで単体で使うスクリプト）。同期はアプリの画面か、自動の同期で行う。
+
 ## [0.3.0] - 2026-11-18
 
 ### 追加
@@ -38,6 +51,7 @@
 - `install.sh`（`--hour`・`--minute` で時刻を指定、`--build-only`）と `uninstall.sh`。
 - キーチェーンのコード署名用の証明書があれば、それで署名する（入れ直してもフルディスクアクセスが外れない）。なければアドホック署名にする。
 
+[0.4.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.2.0
 [0.1.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.1.0

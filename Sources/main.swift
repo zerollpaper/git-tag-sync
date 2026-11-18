@@ -1,20 +1,25 @@
-// Git Tag Sync：git-tag-sync.sh を launchd から実行し、結果を画面で見るためのアプリ。
+// Git Tag Sync：Git のリポジトリになっているフォルダに Finder の「Git」タグを付け、
+// Git の管理から外れたフォルダからは外すアプリ。
 //
-// - `--run [スクリプトへの引数…]` で起動されたとき（launchd から）：画面を出さずにスクリプトを実行する。
-//   出力はそのまま標準出力（launchd のログ）に書き、結果を last-run.json に保存する。
-//   zsh を launchd から直接起動するとフルディスクアクセスが効かないが、このアプリから起動すると
-//   許可がこのアプリに与えられ、子プロセス（zsh・find）にも効く。
+// - `--run [--dry-run] [--quiet]` で起動されたとき（launchd から）：画面を出さずに同期する。
+//   ログに書く行は標準出力（launchd のログ）に出し、結果を last-run.json に保存する。
+//   launchd から zsh などを直接起動するとフルディスクアクセスが効かないが、このアプリが自分で探索すれば、
+//   アプリに与えた許可で読める。
+// - `--untag フォルダ [--dry-run]`：そのフォルダと中の「Git」タグを外す（uninstall.sh が使う）。
 // - 引数なしで開いたとき（Finder などから）：前回の結果、タグ付きのフォルダ、除外するフォルダを画面に出す。
-//   除外するフォルダは、スクリプトと同じフォルダの excludes.txt を読み書きする。
 //
-// スクリプトの場所は Info.plist の SyncScript に書く。実行時刻とログの場所は launchd の plist から読む。
+// 除外先は ~/Library/Application Support/Git Tag Sync/excludes.txt。実行時刻とログの場所は launchd の plist から読む。
 import AppKit
 import SwiftUI
 
 let jobLabel = "local.git-tag-sync"
 let home = FileManager.default.homeDirectoryForCurrentUser
 let jobPlistURL = home.appendingPathComponent("Library/LaunchAgents/\(jobLabel).plist")
-let stateURL = home.appendingPathComponent("Library/Application Support/Git Tag Sync/last-run.json")
+let appSupportURL = home.appendingPathComponent("Library/Application Support/Git Tag Sync")
+let stateURL = appSupportURL.appendingPathComponent("last-run.json")
+/// 除外先の一覧（1行に1フォルダ）。画面からも編集する
+let excludesURL = appSupportURL.appendingPathComponent("excludes.txt")
+let tagName = "Git"
 
 /// アプリにある言語（正本は英語）
 let supportedLanguages = ["en", "ja"]
@@ -46,13 +51,6 @@ func L(_ key: String, _ args: CVarArg...) -> String {
   return args.isEmpty ? format : String(format: format, locale: uiLocale, arguments: args)
 }
 
-/// スクリプトに画面と同じ言語でメッセージを出させるための環境変数
-func scriptEnvironment() -> [String: String] {
-  var env = ProcessInfo.processInfo.environment
-  env["GIT_TAG_SYNC_LANG"] = uiLanguage
-  return env
-}
-
 /// 1回の実行の結果。
 struct RunRecord: Codable {
   var start: Date
@@ -63,8 +61,10 @@ struct RunRecord: Codable {
   var added: [String]
   var removed: [String]
   var warnings: [String]
-  /// この回のスクリプトの出力（そのまま）
+  /// この回のログ（そのまま）
   var log: String
+  /// 読めない場所があったか（フルディスクアクセスの案内を出す）。0.3.0 以前の記録にはない
+  var permissionProblem: Bool?
 }
 
 /// 自動で同期する時刻の決め方
@@ -190,8 +190,9 @@ struct JobSettings: Equatable {
   }
 }
 
-// MARK: - 実行モード（launchd から）
+// MARK: - 同期の本体
 
+/// 終了コードを返す処理の出力先（launchd から動くときは標準出力＝ログ）
 func writeOut(_ text: String) {
   FileHandle.standardOutput.write(text.data(using: .utf8)!)
 }
@@ -203,58 +204,204 @@ func stamp(_ date: Date) -> String {
   return f.string(from: date)
 }
 
-func runSync(_ args: [String]) -> Int32 {
-  guard let script = Bundle.main.object(forInfoDictionaryKey: "SyncScript") as? String else {
-    FileHandle.standardError.write((L("ERROR: SyncScript is missing from Info.plist.") + "\n").data(using: .utf8)!)
-    return 1
-  }
-  let start = Date()
-  writeOut(L("=== %1$@ started %2$@", stamp(start), args.joined(separator: " ")) + "\n")
+/// 除外先の一覧を読む。ファイルがなければ、アプリに同梱した例（excludes.example.txt）から作る。
+func loadExcludeList() -> [String] {
+  ensureExcludesFile()
+  let text = (try? String(contentsOf: excludesURL, encoding: .utf8)) ?? ""
+  return text.components(separatedBy: "\n").compactMap(excludePath(fromLine:))
+}
 
-  let process = Process()
-  process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-  process.arguments = [script] + args
-  process.environment = scriptEnvironment()
-  // 標準出力と標準エラーを1本にまとめ、順番どおりに読む。
-  let pipe = Pipe()
-  process.standardOutput = pipe
-  process.standardError = pipe
-  var output = ""
-  var exitCode: Int32
-  do {
-    try process.run()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    process.waitUntilExit()
-    output = String(decoding: data, as: UTF8.self)
-    exitCode = process.terminationStatus
-  } catch {
-    output = L("ERROR: Cannot start %1$@: %2$@", script, "\(error)") + "\n"
-    exitCode = 1
+func ensureExcludesFile() {
+  let fm = FileManager.default
+  guard !fm.fileExists(atPath: excludesURL.path) else { return }
+  try? fm.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
+  if let example = Bundle.main.url(forResource: "excludes.example", withExtension: "txt") {
+    try? fm.copyItem(at: example, to: excludesURL)
+  } else {
+    try? "~/Library\n".write(to: excludesURL, atomically: true, encoding: .utf8)
   }
-  writeOut(output)
-  writeOut(L("=== %1$@ finished (exit code %2$d)", stamp(Date()), Int(exitCode)) + "\n")
+}
 
-  var record = RunRecord(start: start, end: Date(), exitCode: exitCode, dryRun: args.contains("--dry-run"),
-                         keep: 0, added: [], removed: [], warnings: [], log: output)
-  for line in output.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
-    if line.hasPrefix("ADD") || line.hasPrefix("REMOVE") || line.hasPrefix("KEEP") {
-      guard let colon = line.firstIndex(of: ":") else { continue }
-      let path = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
-      if line.hasPrefix("ADD") { record.added.append(path) }
-      if line.hasPrefix("REMOVE") { record.removed.append(path) }
-    } else if line.hasPrefix("SUMMARY") {
-      if let range = line.range(of: #"KEEP: (\d+)"#, options: .regularExpression),
-         let n = Int(line[range].dropFirst("KEEP: ".count)) {
-        record.keep = n
+/// excludes.txt の1行を絶対パスにする（空行・コメント・/ か ~ で始まらない行は nil）
+func excludePath(fromLine raw: String) -> String? {
+  let line = raw.trimmingCharacters(in: .whitespaces)
+  guard !line.isEmpty, !line.hasPrefix("#") else { return nil }
+  var path = line
+  if path == "~" || path.hasPrefix("~/") { path = home.path + path.dropFirst() }
+  guard path.hasPrefix("/") else { return nil }
+  return URL(fileURLWithPath: path).standardizedFileURL.path
+}
+
+func isInside(_ path: String, _ base: String) -> Bool {
+  path == base || path.hasPrefix(base + "/")
+}
+
+/// 探しも、タグを付けも外しもしない場所か（ホームフォルダの外・ホームフォルダそのもの・除外先・. で始まるフォルダの中）
+func isExcluded(_ path: String, _ excludes: [String]) -> Bool {
+  guard path.hasPrefix(home.path + "/") else { return true }
+  if excludes.contains(where: { isInside(path, $0) }) { return true }
+  return path.dropFirst(home.path.count + 1).split(separator: "/").contains { $0.hasPrefix(".") }
+}
+
+/// 「Git」タグが付いているか。URL は値を覚えてしまうので、毎回作り直す
+func hasTag(_ path: String) -> Bool {
+  let values = try? URL(fileURLWithPath: path).resourceValues(forKeys: [.tagNamesKey])
+  return values?.tagNames?.contains(tagName) ?? false
+}
+
+/// 「Git」タグを付ける・外す。ほかのタグはそのまま残す
+func setTag(_ path: String, _ on: Bool) throws {
+  let url = URL(fileURLWithPath: path)
+  var names = try url.resourceValues(forKeys: [.tagNamesKey]).tagNames ?? []
+  if on {
+    guard !names.contains(tagName) else { return }
+    names.append(tagName)
+  } else {
+    guard names.contains(tagName) else { return }
+    names.removeAll { $0 == tagName }
+  }
+  try (url as NSURL).setResourceValue(names, forKey: .tagNamesKey)
+}
+
+/// Spotlight で「Git」タグが付いているものを探す。失敗したら nil（そのときは何も変えずに止める）
+func taggedPaths(in folder: String) -> [String]? {
+  let result = runCommand("/usr/bin/mdfind", ["-0", "-onlyin", folder, "kMDItemUserTags == \"\(tagName)\""])
+  guard result.status == 0 else { return nil }
+  return result.output.split(separator: "\0").map(String.init).filter { $0.hasPrefix("/") }
+}
+
+/// ホームフォルダから、.git（フォルダでもファイルでもよい）のあるフォルダを探す。
+/// .git の中と、除外先・. で始まるフォルダの中には入らない。シンボリックリンクはたどらない。
+/// 速さのため、find と同じ OS の仕組み（fts）でたどり、ファイルの情報はほぼ取らない（Foundation の列挙だと数倍遅い）。
+func findRepositories(excludes: [String]) -> (repos: [String], unreadable: [(path: String, permission: Bool)]) {
+  var repos = Set<String>()
+  var unreadable: [(path: String, permission: Bool)] = []
+  let root = strdup(home.path)
+  defer { free(root) }
+  var roots: [UnsafeMutablePointer<CChar>?] = [root, nil]
+  guard let fts = fts_open(&roots, FTS_PHYSICAL | FTS_NOCHDIR | FTS_NOSTAT, nil) else {
+    return ([], [(home.path, false)])
+  }
+  defer { fts_close(fts) }
+  while let entry = fts_read(fts) {
+    let path = String(cString: entry.pointee.fts_path)
+    let isGit = path.hasSuffix("/.git")
+    switch Int32(entry.pointee.fts_info) {
+    case FTS_D:
+      if isGit {
+        repos.insert(String(path.dropLast(5)))
+        fts_set(fts, entry, FTS_SKIP)
+      } else if path != home.path && isExcluded(path, excludes) {
+        fts_set(fts, entry, FTS_SKIP)
       }
-    } else if line.hasPrefix("DRY RUN") {
-      record.dryRun = true
-    } else {
-      record.warnings.append(line)
+    case FTS_DNR, FTS_ERR:
+      let code = entry.pointee.fts_errno
+      unreadable.append((path, code == EPERM || code == EACCES))
+    default:
+      // ファイルの .git（サブモジュールや worktree）。シンボリックリンクの .git は数えない
+      if isGit {
+        var st = stat()
+        if lstat(path, &st) == 0 && (st.st_mode & S_IFMT) == S_IFREG { repos.insert(String(path.dropLast(5))) }
+      }
     }
   }
+  return (repos.sorted(), unreadable)
+}
+
+/// 同期する。タグを付け・外し、ログに書く行を out に渡し、結果を返す
+func performSync(dryRun: Bool, quiet: Bool, out: (String) -> Void) -> RunRecord {
+  let start = Date()
+  var record = RunRecord(start: start, end: start, exitCode: 0, dryRun: dryRun, keep: 0,
+                         added: [], removed: [], warnings: [], log: "", permissionProblem: false)
+  var log = ""
+  func emit(_ line: String) { log += line + "\n"; out(line) }
+  func warn(_ line: String) { record.warnings.append(line); emit("WARNING: " + line) }
+
+  let excludes = loadExcludeList()
+  let scan = findRepositories(excludes: excludes)
+  if !scan.unreadable.isEmpty {
+    warn(L("Some folders could not be searched. The folders that could be checked are synced, but the sync is incomplete."))
+    for item in scan.unreadable { warn(L("Could not read: %@", item.path)) }
+    record.permissionProblem = scan.unreadable.contains { $0.permission }
+  }
+  // 外す候補を先に調べる。調べられなければ、何も変えずに止める
+  guard let tagged = taggedPaths(in: home.path) else {
+    emit("ERROR: " + L("Could not search for tagged folders with Spotlight (mdfind). Nothing was changed."))
+    record.exitCode = 1; record.end = Date(); record.log = log
+    return record
+  }
+
+  for repo in scan.repos where !isExcluded(repo, excludes) {
+    if hasTag(repo) {
+      record.keep += 1
+      if !quiet { emit("KEEP  : \(repo)") }
+      continue
+    }
+    do {
+      if !dryRun { try setTag(repo, true) }
+      record.added.append(repo)
+      emit("ADD   : \(repo)")
+    } catch {
+      warn(L("Could not add the tag to %1$@: %2$@", repo, error.localizedDescription))
+    }
+  }
+
+  let fm = FileManager.default
+  for path in tagged where !isExcluded(path, excludes) {
+    var isDir: ObjCBool = false
+    let attributes = try? fm.attributesOfItem(atPath: path)
+    guard attributes?[.type] as? FileAttributeType != .typeSymbolicLink,
+          fm.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue,
+          fm.isReadableFile(atPath: path), fm.isExecutableFile(atPath: path) else { continue }
+    // Spotlight の結果に頼らず、今 .git がないことを確かめ直す（壊れたリンクの .git もあるとみなす）
+    let gitPath = path + "/.git"
+    guard (try? fm.attributesOfItem(atPath: gitPath)) == nil, hasTag(path) else { continue }
+    do {
+      if !dryRun { try setTag(path, false) }
+      record.removed.append(path)
+      emit("REMOVE: \(path)")
+    } catch {
+      warn(L("Could not remove the tag from %1$@: %2$@", path, error.localizedDescription))
+    }
+  }
+
+  if dryRun { emit("DRY RUN: " + L("no tags were changed.")) }
+  emit("SUMMARY -> KEEP: \(record.keep), ADD: \(record.added.count), REMOVE: \(record.removed.count)")
+  // 探しきれなかったときは、成功扱いにしない
+  record.exitCode = scan.unreadable.isEmpty ? 0 : 1
+  record.end = Date()
+  record.log = log
+  return record
+}
+
+/// そのフォルダ自身と、その中で「Git」タグが付いているものからタグを外す。外した数を返す
+func untagAll(in folder: String, dryRun: Bool = false, out: (String) -> Void = { _ in }) -> Result<Int, Error> {
+  let target = URL(fileURLWithPath: folder).standardizedFileURL.path
+  var isDir: ObjCBool = false
+  guard isInside(target, home.path), FileManager.default.fileExists(atPath: target, isDirectory: &isDir), isDir.boolValue else {
+    return .failure(NSError(domain: "GitTagSync", code: 2, userInfo: [NSLocalizedDescriptionKey:
+      L("Specify your home folder or a folder inside it: %@", folder)]))
+  }
+  guard let tagged = taggedPaths(in: target) else {
+    return .failure(NSError(domain: "GitTagSync", code: 3, userInfo: [NSLocalizedDescriptionKey:
+      L("Could not search for tagged folders with Spotlight (mdfind). Nothing was changed.")]))
+  }
+  var count = 0
+  for path in [target] + tagged where isInside(path, target) && hasTag(path) {
+    if !dryRun {
+      do { try setTag(path, false) } catch { return .failure(error) }
+    }
+    out("UNTAG : \(path)")
+    count += 1
+  }
+  if dryRun { out("DRY RUN: " + L("no tags were changed.")) }
+  out("SUMMARY -> UNTAG: \(count)")
+  return .success(count)
+}
+
+func saveRecord(_ record: RunRecord) {
   do {
-    try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: appSupportURL, withIntermediateDirectories: true)
     let encoder = JSONEncoder()
     encoder.dateEncodingStrategy = .iso8601
     encoder.outputFormatting = [.prettyPrinted]
@@ -262,7 +409,32 @@ func runSync(_ args: [String]) -> Int32 {
   } catch {
     FileHandle.standardError.write((L("WARNING: Cannot save the result: %@", "\(error)") + "\n").data(using: .utf8)!)
   }
-  return exitCode
+}
+
+// MARK: - 画面を出さずに動くとき（launchd から・uninstall.sh から）
+
+/// --run [--dry-run] [--quiet]：同期してログに書き、結果を保存する
+func runFromCommandLine(_ args: [String]) -> Int32 {
+  let start = Date()
+  writeOut(L("=== %1$@ started %2$@", stamp(start), args.joined(separator: " ")) + "\n")
+  let record = performSync(dryRun: args.contains("--dry-run"), quiet: args.contains("--quiet")) { writeOut($0 + "\n") }
+  writeOut(L("=== %1$@ finished (exit code %2$d)", stamp(Date()), Int(record.exitCode)) + "\n")
+  saveRecord(record)
+  return record.exitCode
+}
+
+/// --untag フォルダ [--dry-run]：そのフォルダと中の「Git」タグを外す
+func untagFromCommandLine(_ args: [String]) -> Int32 {
+  guard let folder = args.first(where: { !$0.hasPrefix("--") }) else {
+    FileHandle.standardError.write((L("--untag needs a folder.") + "\n").data(using: .utf8)!)
+    return 2
+  }
+  switch untagAll(in: folder, dryRun: args.contains("--dry-run"), out: { writeOut($0 + "\n") }) {
+  case .success: return 0
+  case .failure(let error):
+    FileHandle.standardError.write(("ERROR: " + error.localizedDescription + "\n").data(using: .utf8)!)
+    return 1
+  }
 }
 
 // MARK: - 画面（Finder などから開いたとき）
@@ -284,24 +456,6 @@ func runCommand(_ path: String, _ args: [String], environment: [String: String]?
   } catch {
     return (-1, "\(error)")
   }
-}
-
-let syncScript = Bundle.main.object(forInfoDictionaryKey: "SyncScript") as? String ?? ""
-/// 除外先の一覧。スクリプトと同じフォルダの excludes.txt（スクリプトも同じファイルを読む）
-let excludesURL = URL(fileURLWithPath: syncScript).deletingLastPathComponent().appendingPathComponent("excludes.txt")
-
-/// excludes.txt の1行を絶対パスにする（スクリプトと同じ規則。空行・コメント・不正な行は nil）
-func excludePath(fromLine raw: String) -> String? {
-  let line = raw.trimmingCharacters(in: .whitespaces)
-  guard !line.isEmpty, !line.hasPrefix("#") else { return nil }
-  var path = line
-  if path == "~" || path.hasPrefix("~/") { path = home.path + path.dropFirst() }
-  guard path.hasPrefix("/") else { return nil }
-  return URL(fileURLWithPath: path).standardizedFileURL.path
-}
-
-func isInside(_ path: String, _ base: String) -> Bool {
-  path == base || path.hasPrefix(base + "/")
 }
 
 final class Model: ObservableObject {
@@ -340,8 +494,7 @@ final class Model: ObservableObject {
   }
 
   func loadExcludes() {
-    let text = (try? String(contentsOf: excludesURL, encoding: .utf8)) ?? ""
-    excludes = text.components(separatedBy: "\n").compactMap(excludePath(fromLine:))
+    excludes = loadExcludeList()
   }
 
   /// 今「Git」タグが付いているもの（Spotlight で探す）
@@ -370,6 +523,7 @@ final class Model: ObservableObject {
   func addExclusion(_ rawPath: String) {
     let path = URL(fileURLWithPath: rawPath).standardizedFileURL.path
     if let problem = exclusionProblem(path) { message = problem; return }
+    ensureExcludesFile()
     var text = (try? String(contentsOf: excludesURL, encoding: .utf8)) ?? ""
     if !text.isEmpty && !text.hasSuffix("\n") { text += "\n" }
     text += shortPath(path) + "\n"
@@ -383,14 +537,15 @@ final class Model: ObservableObject {
     busy = true
     message = L("Removing tags inside %@…", shortPath(path))
     DispatchQueue.global().async {
-      let result = runCommand("/bin/zsh", [syncScript, "--untag", path], environment: scriptEnvironment())
-      let count = result.output.range(of: #"UNTAG: (\d+)"#, options: .regularExpression)
-        .map { String(result.output[$0].dropFirst("UNTAG: ".count)) } ?? "?"
+      let result = untagAll(in: path)
       DispatchQueue.main.async {
         self.busy = false
-        self.message = result.status == 0
-          ? L("Excluded %1$@ and removed %2$@ “Git” tags.", shortPath(path), count)
-          : L("Excluded the folder, but could not remove the tags: %@", result.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        switch result {
+        case .success(let count):
+          self.message = L("Excluded %1$@ and removed %2$@ “Git” tags.", shortPath(path), "\(count)")
+        case .failure(let error):
+          self.message = L("Excluded the folder, but could not remove the tags: %@", error.localizedDescription)
+        }
         self.loadTagged()
       }
     }
@@ -617,7 +772,7 @@ struct ResultTab: View {
       }
     }
 
-    if r.warnings.contains(where: { $0.contains("Operation not permitted") }) {
+    if r.permissionProblem == true || r.warnings.contains(where: { $0.contains("Operation not permitted") }) {
       HStack(alignment: .top, spacing: 8) {
         Image(systemName: "lock.fill").foregroundStyle(.orange)
         Text(L("Some folders could not be read. Git Tag Sync may not have Full Disk Access. Check that it is switched on; if it is, remove it from the list and add it again."))
@@ -919,8 +1074,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - 起動
 
 let arguments = Array(CommandLine.arguments.dropFirst())
-if arguments.first == "--run" {
-  exit(runSync(Array(arguments.dropFirst())))
+switch arguments.first {
+case "--run": exit(runFromCommandLine(Array(arguments.dropFirst())))
+case "--untag": exit(untagFromCommandLine(Array(arguments.dropFirst())))
+case "--version":
+  print("Git Tag Sync \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?")")
+  exit(0)
+default: break
 }
 let app = NSApplication.shared
 let delegate = AppDelegate()

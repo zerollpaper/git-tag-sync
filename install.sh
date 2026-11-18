@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Git Tag Sync を入れる・入れ直す。
 #   1. アプリ「Git Tag Sync」を作り、~/Applications に入れる。
-#   2. launchd のジョブ local.git-tag-sync を作り直し、決まった時刻に git-tag-sync.sh を実行させる。
-#   3. 除外先の一覧 excludes.txt がなければ、excludes.example.txt を写して作る。
+#   2. launchd のジョブ local.git-tag-sync を作り直し、決まった時刻にアプリに同期させる。
+#   3. 0.3.0 以前の除外先の一覧（このフォルダの excludes.txt）があれば、アプリのデータの置き場
+#      （~/Library/Application Support/Git Tag Sync/excludes.txt）へ移す。なければアプリが初回に例から作る。
 #
 # 使い方: zsh install.sh [--hour 時] [--minute 分]
 #         zsh install.sh --build-only 出力先フォルダ   # アプリを作るだけ（入れない・登録しない）
@@ -27,6 +28,7 @@ LABEL="local.git-tag-sync"
 APP="$HOME/Applications/$NAME.app"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/git-tag-sync.log"
+SUPPORT="$HOME/Library/Application Support/$NAME"
 DOMAIN="gui/$(id -u)"
 SIGN_ID="${GIT_TAG_SYNC_SIGN_ID:-Local Code Signing}"
 VERSION="$(<"$HERE/VERSION")"
@@ -74,9 +76,6 @@ fi
 
 # --- 前提の確認 ---
 command -v swiftc >/dev/null || { print -u2 -r -- "ERROR: $(t 'swiftc がありません。xcode-select --install で Command Line Tools を入れてください。' 'swiftc is missing. Install the Command Line Tools with: xcode-select --install')"; exit 1; }
-if ! command -v tag >/dev/null && [[ ! -x /opt/homebrew/bin/tag && ! -x /usr/local/bin/tag ]]; then
-  print -u2 -r -- "WARNING: $(t 'tag コマンドがありません。同期の前に brew install tag を実行してください。' 'The tag command is missing. Run brew install tag before syncing.')"
-fi
 
 # --- アプリを作る ---
 BUILD="$(/usr/bin/mktemp -d)"
@@ -89,6 +88,8 @@ swiftc -O -o "$BUNDLE/Contents/MacOS/$EXE" "$HERE/Sources/main.swift"
 cp "$HERE/Resources/Assets.car" "$HERE/Resources/GitTagSync.icns" "$BUNDLE/Contents/Resources/"
 # 画面の文の訳（正本は英語。漏れは tools/check-strings.py で調べる）
 cp -R "$HERE"/Resources/*.lproj "$BUNDLE/Contents/Resources/"
+# 除外先の一覧の例（除外先の一覧がないとき、アプリがこれを写して作る）
+cp "$HERE/excludes.example.txt" "$BUNDLE/Contents/Resources/"
 cat > "$BUNDLE/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -105,7 +106,6 @@ cat > "$BUNDLE/Contents/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
-  <key>SyncScript</key><string>$HERE/git-tag-sync.sh</string>
 </dict>
 </plist>
 EOF
@@ -131,10 +131,11 @@ pkill -x "$EXE" 2>/dev/null || true
 rm -rf "$APP"
 mv "$BUNDLE" "$APP"
 
-# --- 除外先の一覧 ---
-if [[ ! -f "$HERE/excludes.txt" ]]; then
-  cp "$HERE/excludes.example.txt" "$HERE/excludes.txt"
-  t "除外先の一覧を作りました: $HERE/excludes.txt" "Created the exclusion list: $HERE/excludes.txt"
+# --- 除外先の一覧（0.3.0 以前はこのフォルダにあった）---
+if [[ -f "$HERE/excludes.txt" && ! -f "$SUPPORT/excludes.txt" ]]; then
+  mkdir -p "$SUPPORT"
+  mv "$HERE/excludes.txt" "$SUPPORT/excludes.txt"
+  t "除外先の一覧を移しました: $SUPPORT/excludes.txt" "Moved the exclusion list to $SUPPORT/excludes.txt"
 fi
 
 # --- launchd に登録し直す ---
@@ -147,7 +148,7 @@ cat > "$PLIST" <<EOF
 <plist version="1.0">
 <dict>
   <key>Label</key><string>$LABEL</string>
-  <!-- zsh を直接起動するとフルディスクアクセスが効かないので、アプリを経由する。
+  <!-- アプリが自分で同期する（アプリに与えたフルディスクアクセスで読める）。
        --run：画面を出さずに同期する。--quiet：変化のない KEEP の行をログに出さない -->
   <key>ProgramArguments</key>
   <array>

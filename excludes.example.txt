@@ -1,8 +1,9 @@
-# Folders that git-tag-sync never searches, tags or untags. install.sh copies this file to excludes.txt.
-# git-tag-sync の除外先の例。install.sh が、excludes.txt がなければこれを写して作る。
+# Folders that Git Tag Sync never searches, tags or untags. The app copies this file to
+# ~/Library/Application Support/Git Tag Sync/excludes.txt the first time it runs.
+# Git Tag Sync の除外先の初期値。アプリが初回に ~/Library/Application Support/Git Tag Sync/excludes.txt へ写す。
 #
 # One folder per line (~ is allowed). Blank lines and lines starting with # are ignored.
-# Folders whose names start with "." are always excluded. You can also edit the list in the app.
+# Folders whose names start with "." are always excluded. You can also edit the list in the app (Excluded Folders).
 # 1行に1フォルダ（~ で始めてよい）。空行と # で始まる行は読み飛ばす。
 # 名前が . で始まるフォルダは常に除外する。アプリの「除外するフォルダ」からも編集できる。
 

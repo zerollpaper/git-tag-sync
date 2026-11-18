@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Git のリポジトリになっているフォルダに、Finder の「Git」タグを自動で付けておく macOS 用のツールです。Git の管理から外れたフォルダからは、タグを外します。毎日決まった時刻に launchd から実行し、結果はアプリの画面で見られます。
+Git のリポジトリになっているフォルダに、Finder の「Git」タグを自動で付けておく macOS 用のアプリです。Git の管理から外れたフォルダからは、タグを外します。決まった時刻に launchd から同期し、結果はアプリの画面で見られます。macOS のほかに必要なものはありません。
 
 Finder で「Git」タグを選ぶと、Mac の中のリポジトリが一覧できます。
 
@@ -12,14 +12,13 @@ Finder で「Git」タグを選ぶと、Mac の中のリポジトリが一覧で
 
 - ホームフォルダ全体から、`.git`（フォルダでもファイルでもよい）があるフォルダを探し、「Git」タグを付けます。
 - 「Git」タグが付いているのに `.git` がなくなったフォルダからは、タグを外します。
-- 除外先（`excludes.txt`）の中と、名前が `.` で始まるフォルダの中は、探さず、タグを付けも外しもしません。`.` で始まるフォルダには、ツールが内部で作るリポジトリ（エディタやAIツールの履歴、`~/.nvm` など）が多いためです。
-- タグの操作には [tag](https://github.com/jdberry/tag) コマンドを使います。
+- 除外先の中と、名前が `.` で始まるフォルダの中は、探さず、タグを付けも外しもしません。`.` で始まるフォルダには、ツールが内部で作るリポジトリ（エディタやAIツールの履歴、`~/.nvm` など）が多いためです。
+- 処理はすべてアプリの中で行います。フォルダは `find` と同じ OS の仕組み（`fts`）でたどり、Finder のタグは macOS の機能で読み書きし、タグの付いたフォルダは Spotlight（`mdfind`）で探します。`~/Library` を除けば、1回の同期は0.5秒ほどです。
 
 ## 必要なもの
 
 - macOS 14 以降
 - Command Line Tools（`swiftc`。`xcode-select --install` で入る）
-- tag コマンド（`brew install tag`）
 - アイコンを直すときだけ Xcode
 
 ## 入れ方
@@ -35,15 +34,13 @@ zsh install.sh --hour 9 --minute 30   # 毎日その時刻に同期する
 
 1. アプリ `~/Applications/Git Tag Sync.app` を作る。
 2. launchd のジョブ `local.git-tag-sync`（`~/Library/LaunchAgents/local.git-tag-sync.plist`）を作り直す。
-3. `excludes.txt` がなければ、`excludes.example.txt` を写して作る（最初は `~/Library` だけを除外）。
+3. 0.3.0 以前を使っていた場合は、このフォルダの `excludes.txt` をアプリのデータの置き場へ移す。
 
 入れたあと、システム設定 > プライバシーとセキュリティ > **フルディスクアクセス** の「＋」で `~/Applications/Git Tag Sync.app` を追加してください。これがないと、書類・デスクトップ・ダウンロードなどを探せません。
 
-スクリプトはクローンした場所から実行されるので、フォルダを動かしたら `install.sh` を実行し直してください。
-
 ### なぜアプリを挟むか
 
-launchd から `zsh` を直接起動すると、フルディスクアクセスを付ける相手がなく、書類などのフォルダを読めません。Git Tag Sync.app から起動すると、許可がこのアプリに与えられ、その子プロセス（`zsh`・`find`）にも効きます。
+launchd からシェルスクリプトを直接起動すると、フルディスクアクセスを付ける相手がなく、書類などのフォルダを読めません。自動の同期では Git Tag Sync.app そのものを（`--run` 付きで）起動し、アプリに与えた許可でフォルダを読みます。
 
 ### 署名
 
@@ -86,45 +83,37 @@ cd / && rm -rf "$D"
 
 「ログインしたときにも同期する」も選べます。スリープ中に時刻を過ぎたときは、起きたときに同期します。そのため「N時間ごと」は、秒の間隔（`StartInterval`）ではなく、時刻を並べた指定（`StartCalendarInterval`）で launchd に登録します。設定は launchd の plist に保存され、`install.sh` を実行し直しても引き継がれます（`--hour`・`--minute` を指定したときは「毎日その時刻」になります）。
 
-### 除外先（`excludes.txt`）
+### 除外先
 
-1行に1フォルダ（`~` で始めてよい）で書きます。空行と `#` で始まる行は読み飛ばします。手で編集してもかまいません（手で足したときは中のタグは外れないので、要るなら `git-tag-sync.sh --untag フォルダ` を実行します）。
+`~/Library/Application Support/Git Tag Sync/excludes.txt` に保存されます（初回に `excludes.example.txt` から作られます）。1行に1フォルダ（`~` で始めてよい）で、空行と `#` で始まる行は読み飛ばします。手で編集してもかまいません（手で足したときは中のタグは外れないので、外したいときはアプリから追加してください）。
 
 `~/Library` はフォルダの数がとても多く、探索時間の大半を占めます。ここにリポジトリを置いていなければ、除外したままにしておくと速くなります。
 
-### ターミナルから
-
-```bash
-zsh git-tag-sync.sh --dry-run        # 試す（タグを変えない）
-zsh git-tag-sync.sh                  # 同期する
-zsh git-tag-sync.sh --quiet          # 変化のない KEEP の行を出さない
-zsh git-tag-sync.sh --untag ~/foo    # 同期はせず、~/foo とその中の「Git」タグを外す
-launchctl kickstart gui/$(id -u)/local.git-tag-sync   # 登録したジョブを今すぐ動かす
-```
+### ログ
 
 ログは `~/Library/Logs/git-tag-sync.log` に追記されます。1回分は「=== 開始」の行、変化（ADD・REMOVE）と警告、`SUMMARY` の行、「=== 終了（終了コード）」の行です。前回の結果は `~/Library/Application Support/Git Tag Sync/last-run.json` に保存されます。
 
 ### 言語
 
-アプリの画面とログ、スクリプトのメッセージは、英語と日本語に対応しています。既定では macOS の言語設定に合わせます。このアプリだけ言語を変えたいときは、ウインドウ右上の地球儀のボタンか、メニューバーの「言語」で選びます（「システムに合わせる」「English」「日本語」）。画面はその場で切り替わり、自動の同期のログもその言語で書かれます。ターミナルから実行したスクリプトは `LANG`（空なら macOS の言語設定）に従います。
+アプリの画面とログは、英語と日本語に対応しています。既定では macOS の言語設定に合わせます。このアプリだけ言語を変えたいときは、ウインドウ右上の地球儀のボタンか、メニューバーの「言語」で選びます（「システムに合わせる」「English」「日本語」）。画面はその場で切り替わり、自動の同期のログもその言語で書かれます。`install.sh` と `uninstall.sh` は `LANG`（空なら macOS の言語設定）に従います。
 
 ## 取り除き方
 
 ```bash
-zsh uninstall.sh
+zsh uninstall.sh                 # 「Git」タグは残す
+zsh uninstall.sh --remove-tags   # 先に、ホームフォルダの中の「Git」タグをすべて外す
 ```
 
-launchd のジョブ、アプリ、前回の結果を消します。このフォルダ、ログ、付いている「Git」タグは残します。タグも外したいときは、先に `zsh git-tag-sync.sh --untag ~` を実行してください。フルディスクアクセスの一覧に残った項目は「−」で消してください。
+launchd のジョブ、アプリ、前回の結果を消します。除外先の一覧とログは残します。フルディスクアクセスの一覧に残った項目は「−」で消してください。
 
 ## ファイル
 
 | ファイル | 役割 |
 |---|---|
-| `git-tag-sync.sh` | 同期の本体（zsh） |
-| `excludes.example.txt` | 除外先の例。`install.sh` が `excludes.txt` に写す |
-| `Sources/main.swift` | アプリ。`--run` で起動されると画面を出さずにスクリプトを実行して結果を保存し、引数なしで開くと結果の画面を出す |
+| `Sources/main.swift` | アプリ。`--run` で起動されると画面を出さずに同期して結果を保存する（自動の同期が使う）。`--untag フォルダ` で、そのフォルダと中の「Git」タグを外す（`uninstall.sh --remove-tags` が使う）。引数なしで開くと画面を出す |
+| `excludes.example.txt` | 除外先の初期値。アプリに同梱する |
 | `install.sh` / `uninstall.sh` | 入れる・取り除く |
-| `VERSION` / `CHANGELOG.md` | 版（`git-tag-sync.sh --version` とアプリの画面に出る）と変更点 |
+| `VERSION` / `CHANGELOG.md` | 版（アプリの画面に出る）と変更点 |
 | `GitTagSync.icon` | アイコン（Icon Composer の形式）。ダーク・クリア・色合い調整の各表示に対応 |
 | `Resources/` | 変換済みのアイコン（`GitTagSync.icon` を直したら `tools/build-icon.sh` で作り直す。Xcode が要る）と、画面の文の訳（`*.lproj/Localizable.strings`。正本は英語なので `en.lproj` は空）。訳の漏れは `tools/check-strings.py` で調べる |
 
