@@ -2,6 +2,14 @@
 
 この形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に、版の付け方は [Semantic Versioning](https://semver.org/lang/ja/) に従います。版の正本は `VERSION` です。
 
+## [0.5.0] - 2026-11-18
+
+### 変更
+
+- 「今すぐ同期」を、launchd に頼まずにアプリの中で直接行うようにした。終わるとすぐに結果が出る（結果のファイルを1秒ごとに見張る仕組みと、15分の待ち時間をなくした）。ログには自動の同期と同じ形で書き足す。
+- タグの付いたフォルダを探すのに、`mdfind` コマンドではなく Spotlight の API（`MDQuery`）を使うようにした。
+- アプリが使う外のコマンドは、自動の同期の時刻を launchd に登録する `launchctl` だけになった（macOS には、ほかに公開された方法がない）。
+
 ## [0.4.0] - 2026-11-18
 
 ### 変更
@@ -51,6 +59,7 @@
 - `install.sh`（`--hour`・`--minute` で時刻を指定、`--build-only`）と `uninstall.sh`。
 - キーチェーンのコード署名用の証明書があれば、それで署名する（入れ直してもフルディスクアクセスが外れない）。なければアドホック署名にする。
 
+[0.5.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.5.0
 [0.4.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.4.0
 [0.3.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.3.0
 [0.2.0]: https://github.com/zerollpaper/git-tag-sync/releases/tag/v0.2.0

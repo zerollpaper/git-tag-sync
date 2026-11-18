@@ -10,6 +10,7 @@
 //
 // 除外先は ~/Library/Application Support/Git Tag Sync/excludes.txt。実行時刻とログの場所は launchd の plist から読む。
 import AppKit
+import CoreServices
 import SwiftUI
 
 let jobLabel = "local.git-tag-sync"
@@ -263,11 +264,40 @@ func setTag(_ path: String, _ on: Bool) throws {
   try (url as NSURL).setResourceValue(names, forKey: .tagNamesKey)
 }
 
-/// Spotlight で「Git」タグが付いているものを探す。失敗したら nil（そのときは何も変えずに止める）
+/// Spotlight で「Git」タグが付いているものを、folder の中から探す（mdfind -onlyin と同じ）。
+/// Spotlight の API（MDQuery）に直接問い合わせ、結果がそろうまで待つ。失敗したら nil（そのときは何も変えずに止める）
 func taggedPaths(in folder: String) -> [String]? {
-  let result = runCommand("/usr/bin/mdfind", ["-0", "-onlyin", folder, "kMDItemUserTags == \"\(tagName)\""])
-  guard result.status == 0 else { return nil }
-  return result.output.split(separator: "\0").map(String.init).filter { $0.hasPrefix("/") }
+  let queryString = "kMDItemUserTags == \"\(tagName)\"" as CFString
+  guard let query = MDQueryCreate(kCFAllocatorDefault, queryString, nil, nil) else { return nil }
+  MDQuerySetSearchScope(query, [folder] as CFArray, 0)
+  guard MDQueryExecute(query, CFOptionFlags(kMDQuerySynchronous.rawValue)) else { return nil }
+  var paths: [String] = []
+  for index in 0..<MDQueryGetResultCount(query) {
+    guard let raw = MDQueryGetResultAtIndex(query, index) else { continue }
+    let item = Unmanaged<MDItem>.fromOpaque(raw).takeUnretainedValue()
+    if let path = MDItemCopyAttribute(item, kMDItemPath) as? String, isInside(path, folder) {
+      paths.append(path)
+    }
+  }
+  return paths
+}
+
+/// ログのファイルに書き足す（launchd から動くときは標準出力がログになるので、画面から同期したときに使う）
+func appendToLog(_ text: String, at path: String) {
+  let url = URL(fileURLWithPath: path)
+  try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  if !FileManager.default.fileExists(atPath: path) {
+    FileManager.default.createFile(atPath: path, contents: nil)
+  }
+  guard let handle = try? FileHandle(forWritingTo: url) else { return }
+  defer { try? handle.close() }
+  _ = try? handle.seekToEnd()
+  try? handle.write(contentsOf: Data(text.utf8))
+}
+
+/// ログの場所（launchd の plist にあればそれ）
+func logPath(_ settings: JobSettings) -> String {
+  settings.logPath ?? home.appendingPathComponent("Library/Logs/git-tag-sync.log").path
 }
 
 /// ホームフォルダから、.git（フォルダでもファイルでもよい）のあるフォルダを探す。
@@ -326,7 +356,7 @@ func performSync(dryRun: Bool, quiet: Bool, out: (String) -> Void) -> RunRecord 
   }
   // 外す候補を先に調べる。調べられなければ、何も変えずに止める
   guard let tagged = taggedPaths(in: home.path) else {
-    emit("ERROR: " + L("Could not search for tagged folders with Spotlight (mdfind). Nothing was changed."))
+    emit("ERROR: " + L("Could not search for tagged folders with Spotlight. Nothing was changed."))
     record.exitCode = 1; record.end = Date(); record.log = log
     return record
   }
@@ -384,7 +414,7 @@ func untagAll(in folder: String, dryRun: Bool = false, out: (String) -> Void = {
   }
   guard let tagged = taggedPaths(in: target) else {
     return .failure(NSError(domain: "GitTagSync", code: 3, userInfo: [NSLocalizedDescriptionKey:
-      L("Could not search for tagged folders with Spotlight (mdfind). Nothing was changed.")]))
+      L("Could not search for tagged folders with Spotlight. Nothing was changed.")]))
   }
   var count = 0
   for path in [target] + tagged where isInside(path, target) && hasTag(path) {
@@ -479,7 +509,6 @@ final class Model: ObservableObject {
     }
   }
   var onLanguageChange: (() -> Void)?
-  private var timer: Timer?
 
   init() { load() }
 
@@ -501,8 +530,7 @@ final class Model: ObservableObject {
   func loadTagged() {
     taggedLoading = true
     DispatchQueue.global().async {
-      let result = runCommand("/usr/bin/mdfind", ["-onlyin", home.path, "kMDItemUserTags == \"Git\""])
-      let paths = result.output.split(separator: "\n").map(String.init).filter { $0.hasPrefix("/") }.sorted()
+      let paths = (taggedPaths(in: home.path) ?? []).sorted()
       DispatchQueue.main.async { self.tagged = paths; self.taggedLoading = false }
     }
   }
@@ -577,24 +605,20 @@ final class Model: ObservableObject {
     for url in panel.urls { addExclusion(url.path) }
   }
 
-  /// launchd のジョブを今すぐ動かし、結果が書き換わるまで待つ。
+  /// このアプリの中で今すぐ同期する。自動の同期と同じ形でログに書き足し、結果を保存する
   func syncNow() {
     message = nil
-    let started = Date()
-    let kick = runCommand("/bin/launchctl", ["kickstart", "gui/\(getuid())/\(jobLabel)"])
-    guard kick.status == 0 else {
-      message = L("Could not start the launchd job %@. Run install.sh again.", jobLabel)
-      return
-    }
     syncing = true
-    timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] t in
-      guard let self else { t.invalidate(); return }
-      let modified = (try? stateURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-      if let modified, modified > started {
-        t.invalidate(); self.syncing = false; self.load()
-      } else if Date().timeIntervalSince(started) > 15 * 60 {
-        t.invalidate(); self.syncing = false
-        self.message = L("The sync did not finish within 15 minutes. Check the log.")
+    let log = logPath(settings)
+    DispatchQueue.global(qos: .userInitiated).async {
+      var text = L("=== %1$@ started %2$@", stamp(Date()), L("Sync Now")) + "\n"
+      let record = performSync(dryRun: false, quiet: true) { text += $0 + "\n" }
+      text += L("=== %1$@ finished (exit code %2$d)", stamp(Date()), Int(record.exitCode)) + "\n"
+      appendToLog(text, at: log)
+      saveRecord(record)
+      DispatchQueue.main.async {
+        self.syncing = false
+        self.load()
       }
     }
   }
@@ -641,7 +665,7 @@ final class Model: ObservableObject {
   }
 
   func openFullLog() {
-    let path = settings.logPath ?? home.appendingPathComponent("Library/Logs/git-tag-sync.log").path
+    let path = logPath(settings)
     NSWorkspace.shared.open([URL(fileURLWithPath: path)],
                             withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Console.app"),
                             configuration: NSWorkspace.OpenConfiguration())

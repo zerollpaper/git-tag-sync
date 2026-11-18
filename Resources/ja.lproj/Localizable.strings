@@ -25,8 +25,6 @@
 "Stopped excluding %@. Repositories inside will be tagged at the next sync (or when you click Sync Now)." = "%@ を除外から外しました。次の同期（「今すぐ同期」でも）で、中のリポジトリにタグが付きます。";
 "Exclude" = "除外に追加";
 "Choose folders to exclude. The “Git” tag is removed from them and from everything inside." = "除外するフォルダを選んでください。そのフォルダと中の「Git」タグは外れます。";
-"Could not start the launchd job %@. Run install.sh again." = "launchd のジョブ %@ を起動できませんでした。install.sh を実行し直してください。";
-"The sync did not finish within 15 minutes. Check the log." = "15分たっても終わりませんでした。ログを確認してください。";
 "A sync is running. Save again after it finishes." = "同期の実行中です。終わってから保存し直してください。";
 "Saving the schedule…" = "自動の同期の設定を保存しています…";
 "Could not load the job into launchd: %@" = "launchd に読み込めませんでした: %@";
@@ -93,7 +91,7 @@
 "Could not add the tag to %1$@: %2$@" = "%1$@ にタグを付けられませんでした: %2$@";
 "Could not read: %@" = "読めませんでした: %@";
 "Could not remove the tag from %1$@: %2$@" = "%1$@ のタグを外せませんでした: %2$@";
-"Could not search for tagged folders with Spotlight (mdfind). Nothing was changed." = "Spotlight（mdfind）でタグの付いたフォルダを探せませんでした。何も変更していません。";
 "Some folders could not be searched. The folders that could be checked are synced, but the sync is incomplete." = "探索できない場所があります。確認できたフォルダは同期しましたが、全体の同期は未完了です。";
 "Specify your home folder or a folder inside it: %@" = "ホームフォルダか、その中にあるフォルダを指定してください: %@";
 "no tags were changed." = "タグの変更は行っていません。";
+"Could not search for tagged folders with Spotlight. Nothing was changed." = "Spotlight でタグの付いたフォルダを探せませんでした。何も変更していません。";

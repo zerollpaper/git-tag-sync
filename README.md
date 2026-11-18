@@ -13,7 +13,7 @@ Select the "Git" tag in the Finder sidebar to see every repository on your Mac.
 - Searches your home folder for folders that contain `.git` (a directory or a file) and adds the "Git" tag to them.
 - Removes the tag from tagged folders that no longer contain `.git`.
 - Never searches, tags or untags inside the excluded folders or inside folders whose names start with `.` (tools keep many internal repositories there, such as editor or AI tool history and `~/.nvm`).
-- Everything runs inside the app: it walks the folders with the same OS mechanism as `find` (`fts`), reads and writes Finder tags through the macOS API, and finds tagged folders with Spotlight (`mdfind`). A sync takes about half a second without `~/Library`.
+- Everything runs inside the app: it walks the folders with the same OS mechanism as `find` (`fts`), reads and writes Finder tags through the macOS API, and asks Spotlight for tagged folders through its API (`MDQuery`). A sync takes about half a second without `~/Library`. The only outside command it uses is `launchctl`, to register the schedule with launchd (macOS has no other public way to do that).
 
 ## Requirements
 
@@ -71,7 +71,7 @@ The app has three tabs:
 - **Tagged Folders**: every folder that currently has the "Git" tag (found with Spotlight). Show it in Finder or exclude it.
 - **Excluded Folders**: the search scope and the excluded folders. Add folders with "Add Folder…" and remove them with "−". **Excluding a folder removes the "Git" tag from it and from everything inside it.** After you stop excluding it, the repositories inside are tagged at the next sync.
 
-At the bottom: the next scheduled run, "Change…" (change the schedule), "Open Full Log" (open the log in Console) and "Sync Now".
+At the bottom: the next scheduled run, "Change…" (change the schedule), "Open Full Log" (open the log in Console) and "Sync Now" (syncs right in the app and writes to the same log).
 
 ### Schedule
 
