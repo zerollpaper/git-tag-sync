@@ -1,12 +1,13 @@
 #!/bin/zsh
 # Git Tag Sync を入れる・入れ直す。
 #   1. アプリ「Git Tag Sync」を作り、~/Applications に入れる。
-#   2. launchd のジョブ local.git-tag-sync を作り直し、毎日決まった時刻に git-tag-sync.sh を実行させる。
+#   2. launchd のジョブ local.git-tag-sync を作り直し、決まった時刻に git-tag-sync.sh を実行させる。
 #   3. 除外先の一覧 excludes.txt がなければ、excludes.example.txt を写して作る。
 #
 # 使い方: zsh install.sh [--hour 時] [--minute 分]
 #         zsh install.sh --build-only 出力先フォルダ   # アプリを作るだけ（入れない・登録しない）
-# 時刻を指定しなければ、前に登録した時刻（初回は 10:00）のまま。
+# 時刻を指定すると「毎日その時刻」になる。指定しなければ、前の設定（アプリの「変更…」で決めた間隔や、
+# ログインしたときの実行も含む）を引き継ぐ。初回は毎日 10:00。
 #
 # 署名：キーチェーンにコード署名用の証明書（既定は「Local Code Signing」。GIT_TAG_SYNC_SIGN_ID で変えられる）が
 # あればそれで署名する。macOS はアプリを「識別子＋証明書」で見分けるので、入れ直してもフルディスクアクセスが外れない。
@@ -35,13 +36,17 @@ while (( $# )); do
   esac
   shift
 done
-# 時刻の指定がなければ、今の登録から引き継ぐ。
-if [[ -z "$HOUR" ]]; then
-  HOUR=$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Hour' "$PLIST" 2>/dev/null || echo 10)
+# 時刻の指定がなければ、前の設定を引き継ぐ（plist を作り直す前に控えておく）。
+# OLD_SCHEDULE は StartCalendarInterval の中身（XML）。空なら「自動では同期しない」。
+KEEP_SCHEDULE=0 OLD_SCHEDULE="" RUN_AT_LOAD="false"
+if [[ -f "$PLIST" ]]; then
+  if [[ -z "$HOUR$MINUTE" ]]; then
+    KEEP_SCHEDULE=1
+    OLD_SCHEDULE=$(plutil -extract StartCalendarInterval xml1 -o - "$PLIST" 2>/dev/null | sed '1,3d;$d' || true)
+  fi
+  [[ "$(plutil -extract RunAtLoad raw -o - "$PLIST" 2>/dev/null || true)" == "true" ]] && RUN_AT_LOAD="true"
 fi
-if [[ -z "$MINUTE" ]]; then
-  MINUTE=$(/usr/libexec/PlistBuddy -c 'Print :StartCalendarInterval:Minute' "$PLIST" 2>/dev/null || echo 0)
-fi
+HOUR="${HOUR:-10}" MINUTE="${MINUTE:-0}"
 if [[ ! "$HOUR" =~ '^[0-9]+$' ]] || (( HOUR > 23 )) || [[ ! "$MINUTE" =~ '^[0-9]+$' ]] || (( MINUTE > 59 )); then
   print -u2 -r -- "ERROR: 時刻が正しくありません（時 $HOUR、分 $MINUTE）。"
   exit 2
@@ -127,7 +132,7 @@ cat > "$PLIST" <<EOF
     <string>--quiet</string>
   </array>
   <key>AssociatedBundleIdentifiers</key><string>$LABEL</string>
-  <!-- 毎日この時刻に実行する。スリープ中だった場合は起きたときに実行される -->
+  <!-- この時刻に実行する（アプリの「変更…」で変えられる）。スリープ中だった場合は起きたときに実行される -->
   <key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>$((HOUR))</integer>
@@ -140,10 +145,22 @@ cat > "$PLIST" <<EOF
 </dict>
 </plist>
 EOF
+if (( KEEP_SCHEDULE )); then
+  if [[ -n "$OLD_SCHEDULE" ]]; then
+    plutil -replace StartCalendarInterval -xml "$OLD_SCHEDULE" "$PLIST"
+  else
+    plutil -remove StartCalendarInterval "$PLIST"
+  fi
+fi
+plutil -replace RunAtLoad -bool "$RUN_AT_LOAD" "$PLIST"
 plutil -lint -s "$PLIST"
 launchctl bootstrap "$DOMAIN" "$PLIST"
 
-printf '入れました: %s %s（毎日 %d:%02d に同期）\n' "$APP" "$VERSION" "$HOUR" "$MINUTE"
+if (( KEEP_SCHEDULE )); then
+  printf '入れました: %s %s（同期の時刻は前の設定のまま）\n' "$APP" "$VERSION"
+else
+  printf '入れました: %s %s（毎日 %d:%02d に同期）\n' "$APP" "$VERSION" "$HOUR" "$MINUTE"
+fi
 if (( SIGNED_WITH_CERT )); then
   echo "フルディスクアクセスは初回だけ付ける（システム設定 > プライバシーとセキュリティ > フルディスクアクセス で「$NAME」を追加）。"
 else

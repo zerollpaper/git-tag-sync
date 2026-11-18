@@ -30,26 +30,115 @@ struct RunRecord: Codable {
   var log: String
 }
 
-/// launchd の plist（実行時刻・ログの場所）
-struct JobSettings {
-  var hour: Int?
-  var minute: Int?
+/// 自動で同期する時刻の決め方
+enum ScheduleMode: String, CaseIterable, Identifiable {
+  case daily, interval, off
+  var id: String { rawValue }
+  var title: String {
+    switch self {
+    case .daily: return "毎日"
+    case .interval: return "一定の間隔"
+    case .off: return "しない"
+    }
+  }
+}
+
+/// 「一定の間隔」で選べる時間（24 を割り切れるもの）
+let intervalChoices = [1, 2, 3, 4, 6, 8, 12]
+
+/// launchd の plist の中身のうち、画面で扱うもの（実行する時刻・ログイン時の実行・ログの場所）。
+/// 正本は plist そのもの。「N時間ごと」は、スリープ中に時刻を過ぎたときも起きたときに実行されるよう、
+/// StartInterval（秒ごと）ではなく、時刻を並べた StartCalendarInterval で表す。
+struct JobSettings: Equatable {
+  var exists = false
+  var mode: ScheduleMode = .daily
+  /// 毎日：その時刻。一定の間隔：起点の時刻
+  var hour = 10
+  var minute = 0
+  var intervalHours = 6
+  var runAtLoad = false
   var logPath: String?
+  /// plist にある時刻の指定そのまま（次回の計算に使う）
+  var entries: [[String: Int]] = []
+
+  /// 保存するときに StartCalendarInterval に入れる時刻（時・分）
+  var plannedTimes: [(hour: Int, minute: Int)] {
+    switch mode {
+    case .off: return []
+    case .daily: return [(hour, minute)]
+    case .interval:
+      return stride(from: 0, to: 24, by: intervalHours).map { ((hour + $0) % 24, minute) }.sorted { $0.hour < $1.hour }
+    }
+  }
+
+  static func == (a: JobSettings, b: JobSettings) -> Bool {
+    a.exists == b.exists && a.mode == b.mode && a.hour == b.hour && a.minute == b.minute
+      && a.intervalHours == b.intervalHours && a.runAtLoad == b.runAtLoad && a.logPath == b.logPath && a.entries == b.entries
+  }
 
   static func load() -> JobSettings {
     guard let data = try? Data(contentsOf: jobPlistURL),
           let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
     else { return JobSettings() }
-    let interval = plist["StartCalendarInterval"] as? [String: Any]
-    return JobSettings(hour: interval?["Hour"] as? Int, minute: interval?["Minute"] as? Int,
-                       logPath: plist["StandardOutPath"] as? String)
+    var s = JobSettings(exists: true)
+    s.logPath = plist["StandardOutPath"] as? String
+    s.runAtLoad = plist["RunAtLoad"] as? Bool ?? false
+    if let one = plist["StartCalendarInterval"] as? [String: Int] { s.entries = [one] }
+    if let many = plist["StartCalendarInterval"] as? [[String: Int]] { s.entries = many }
+    let times = s.entries.compactMap { e -> (Int, Int)? in
+      guard let h = e["Hour"], e.keys.allSatisfy({ $0 == "Hour" || $0 == "Minute" }) else { return nil }
+      return (h, e["Minute"] ?? 0)
+    }.sorted { $0.0 < $1.0 }
+    if s.entries.isEmpty {
+      s.mode = .off
+    } else if times.count == 1 {
+      (s.mode, s.hour, s.minute) = (.daily, times[0].0, times[0].1)
+    } else if times.count == s.entries.count, 24 % times.count == 0,
+              Set(times.map(\.1)).count == 1,
+              zip(times, times.dropFirst()).allSatisfy({ $1.0 - $0.0 == 24 / times.count }) {
+      (s.mode, s.intervalHours, s.hour, s.minute) = (.interval, 24 / times.count, times[0].0, times[0].1)
+    } else if let first = times.first {
+      // 手で書いた独自の時刻。画面では「毎日」の最初の時刻として見せる（保存すると置き換わる）
+      (s.mode, s.hour, s.minute) = (.daily, first.0, first.1)
+    }
+    return s
   }
 
-  /// 次に実行される日時（毎日の指定時刻）
+  /// 次に実行される日時（plist にある時刻の指定から計算する）
   func nextRun(after now: Date = Date()) -> Date? {
-    guard let hour else { return nil }
-    return Calendar.current.nextDate(after: now, matching: DateComponents(hour: hour, minute: minute ?? 0),
-                                     matchingPolicy: .nextTime)
+    entries.compactMap { e -> Date? in
+      var c = DateComponents()
+      c.month = e["Month"]; c.day = e["Day"]; c.weekday = e["Weekday"].map { $0 % 7 + 1 }
+      c.hour = e["Hour"]; c.minute = e["Minute"] ?? 0
+      return Calendar.current.nextDate(after: now, matching: c, matchingPolicy: .nextTime)
+    }.min()
+  }
+
+  /// 画面に出す説明（例：「毎日 10:00」「6時間ごと（4:00・10:00・16:00・22:00）」）
+  var summary: String {
+    func t(_ h: Int, _ m: Int) -> String { String(format: "%d:%02d", h, m) }
+    switch mode {
+    case .off: return "自動では同期しない"
+    case .daily: return "毎日 \(t(hour, minute))"
+    case .interval: return "\(intervalHours)時間ごと（\(plannedTimes.map { t($0.hour, $0.minute) }.joined(separator: "・"))）"
+    }
+  }
+
+  /// plist を書き換える（ほかの項目はそのまま残す）
+  func write() throws {
+    let data = try Data(contentsOf: jobPlistURL)
+    guard var plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else {
+      throw NSError(domain: "GitTagSync", code: 1, userInfo: [NSLocalizedDescriptionKey: "launchd の設定ファイルを読めません"])
+    }
+    let times = plannedTimes.map { ["Hour": $0.hour, "Minute": $0.minute] }
+    switch mode {
+    case .off: plist.removeValue(forKey: "StartCalendarInterval")
+    case .daily: plist["StartCalendarInterval"] = times[0]
+    case .interval: plist["StartCalendarInterval"] = times
+    }
+    plist["RunAtLoad"] = runAtLoad
+    let out = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    try out.write(to: jobPlistURL, options: .atomic)
   }
 }
 
@@ -293,6 +382,40 @@ final class Model: ObservableObject {
     }
   }
 
+  /// 自動で同期する時刻の設定を保存し、launchd に読み込み直させる。
+  func applySchedule(_ new: JobSettings) {
+    let domain = "gui/\(getuid())"
+    if runCommand("/bin/launchctl", ["print", "\(domain)/\(jobLabel)"]).output.contains("state = running") {
+      message = "同期の実行中です。終わってから保存してください。"
+      return
+    }
+    busy = true
+    message = "自動の同期の設定を保存しています…"
+    DispatchQueue.global().async {
+      var problem: String?
+      do {
+        try new.write()
+        _ = runCommand("/bin/launchctl", ["bootout", "\(domain)/\(jobLabel)"])
+        for _ in 0..<20 {
+          if runCommand("/bin/launchctl", ["print", "\(domain)/\(jobLabel)"]).status != 0 { break }
+          Thread.sleep(forTimeInterval: 0.5)
+        }
+        let boot = runCommand("/bin/launchctl", ["bootstrap", domain, jobPlistURL.path])
+        if boot.status != 0 {
+          problem = "launchd に読み込めませんでした: \(boot.output.trimmingCharacters(in: .whitespacesAndNewlines))"
+        }
+      } catch {
+        problem = "保存できませんでした: \(error.localizedDescription)"
+      }
+      DispatchQueue.main.async {
+        self.busy = false
+        self.settings = JobSettings.load()
+        let what = self.settings.mode == .off ? "自動では同期しないようにしました。" : "自動の同期を「\(self.settings.summary)」にしました。"
+        self.message = problem ?? what + (self.settings.runAtLoad ? "ログインしたときにも同期します。" : "")
+      }
+    }
+  }
+
   func openFullLog() {
     let path = settings.logPath ?? home.appendingPathComponent("Library/Logs/git-tag-sync.log").path
     NSWorkspace.shared.open([URL(fileURLWithPath: path)],
@@ -510,8 +633,72 @@ struct ExcludesTab: View {
   }
 }
 
+struct ScheduleSheet: View {
+  @ObservedObject var model: Model
+  @State var draft: JobSettings
+  @Environment(\.dismiss) private var dismiss
+
+  /// 時・分を DatePicker で扱うための橋渡し
+  var time: Binding<Date> {
+    Binding(
+      get: { Calendar.current.date(bySettingHour: draft.hour, minute: draft.minute, second: 0, of: Date()) ?? Date() },
+      set: { date in
+        let c = Calendar.current.dateComponents([.hour, .minute], from: date)
+        draft.hour = c.hour ?? 0
+        draft.minute = c.minute ?? 0
+      })
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("自動で同期する").font(.headline)
+      Picker("自動で同期する", selection: $draft.mode) {
+        ForEach(ScheduleMode.allCases) { Text($0.title).tag($0) }
+      }
+      .pickerStyle(.segmented).labelsHidden()
+
+      Group {
+        switch draft.mode {
+        case .daily:
+          DatePicker("時刻", selection: time, displayedComponents: .hourAndMinute)
+        case .interval:
+          Picker("間隔", selection: $draft.intervalHours) {
+            ForEach(intervalChoices, id: \.self) { Text("\($0)時間ごと").tag($0) }
+          }
+          DatePicker("起点の時刻", selection: time, displayedComponents: .hourAndMinute)
+        case .off:
+          Text("自動では同期しません。「今すぐ同期」はいつでも使えます。")
+            .foregroundStyle(.secondary)
+        }
+      }
+      .frame(maxWidth: 260, alignment: .leading)
+
+      if draft.mode != .off {
+        Label(draft.summary, systemImage: "clock").font(.callout).foregroundStyle(.secondary)
+      }
+      Toggle("ログインしたときにも同期する", isOn: $draft.runAtLoad)
+      Text("スリープ中に時刻を過ぎたときは、起きたときに同期します。「ログインしたときにも同期する」をオンにして保存すると、その場でも1回同期します。")
+        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+      HStack {
+        Spacer()
+        Button("キャンセル") { dismiss() }.keyboardShortcut(.cancelAction)
+        Button("保存") {
+          model.applySchedule(draft)
+          dismiss()
+        }
+        .keyboardShortcut(.defaultAction)
+        .disabled(draft == model.settings)
+      }
+    }
+    .padding(20)
+    .frame(width: 400)
+  }
+}
+
 struct ContentView: View {
   @ObservedObject var model: Model
+  @State private var showSchedule = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
@@ -540,10 +727,22 @@ struct ContentView: View {
       }
 
       HStack {
-        if let next = model.settings.nextRun() {
-          Label("次回：\(displayDate(next))", systemImage: "clock").foregroundStyle(.secondary)
+        if !model.settings.exists {
+          Label("定期実行が登録されていません（install.sh を実行してください）", systemImage: "clock.badge.exclamationmark")
+            .foregroundStyle(.orange)
         } else {
-          Label("定期実行が登録されていません", systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange)
+          Group {
+            if let next = model.settings.nextRun() {
+              Label("次回：\(displayDate(next))", systemImage: "clock")
+            } else {
+              Label("自動では同期しない", systemImage: "pause.circle")
+            }
+          }
+          .foregroundStyle(.secondary)
+          .help(model.settings.summary + (model.settings.runAtLoad ? "・ログインしたときにも" : ""))
+          Button("変更…") { showSchedule = true }
+            .controlSize(.small)
+            .disabled(model.busy || model.syncing)
         }
         Spacer()
         if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
@@ -565,6 +764,7 @@ struct ContentView: View {
     }
     .padding(20)
     .frame(width: 600, height: 600)
+    .sheet(isPresented: $showSchedule) { ScheduleSheet(model: model, draft: model.settings) }
   }
 }
 

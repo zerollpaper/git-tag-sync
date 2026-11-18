@@ -27,8 +27,8 @@ Select the "Git" tag in the Finder sidebar to see every repository on your Mac.
 ```bash
 git clone https://github.com/zerollpaper/git-tag-sync.git
 cd git-tag-sync
-zsh install.sh                       # sync every day at 10:00
-zsh install.sh --hour 9 --minute 30  # or choose the time
+zsh install.sh                       # sync every day at 10:00 (first install)
+zsh install.sh --hour 9 --minute 30  # or every day at the time you choose
 ```
 
 `install.sh`:
@@ -74,7 +74,17 @@ The app has three tabs:
 - **タグ付きのフォルダ (Tagged folders)**: every folder that currently has the "Git" tag (found with Spotlight). Reveal it in Finder or exclude it.
 - **除外するフォルダ (Excluded folders)**: the search scope and the excluded folders. Add folders with "フォルダを追加…" and remove them with "−". **Excluding a folder removes the "Git" tag from it and from everything inside it.** After you remove an exclusion, the repositories inside are tagged at the next sync.
 
-At the bottom: the next scheduled run, "ログ全体を開く" (open the full log in Console) and "今すぐ同期" (sync now).
+At the bottom: the next scheduled run, "変更…" (change the schedule), "ログ全体を開く" (open the full log in Console) and "今すぐ同期" (sync now).
+
+### Schedule
+
+Click "変更…" next to the next run to choose when to sync automatically:
+
+- **毎日 (Every day)** at a time,
+- **一定の間隔 (Every N hours)**: every 1, 2, 3, 4, 6, 8 or 12 hours from a start time,
+- **しない (Never)**: only when you click "今すぐ同期".
+
+You can also turn on **ログインしたときにも同期する** (also sync at login). If the Mac was asleep at a scheduled time, the sync runs when it wakes up. "Every N hours" is registered as a list of times (`StartCalendarInterval`) for that reason. The setting lives in the launchd plist; running `install.sh` again keeps it unless you pass `--hour`/`--minute`.
 
 ### `excludes.txt`
 
